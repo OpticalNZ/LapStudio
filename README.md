@@ -1,6 +1,6 @@
 # LapStudio Renderer
 
-LapStudio is a motorsport telemetry overlay generator that creates chroma-key video overlays from ECU and datalogger files. Designed to be composited over dashcam or track footage in any video editor.
+LapStudio is a motorsport orientated telemetry overlay generator that creates chroma-key video overlays from ECU and datalogger files. Designed to be composited over dashcam or track footage in any video editor.
 
 ## Features
 
