@@ -2,6 +2,8 @@
 
 LapStudio is a motorsport telemetry overlay generator that creates chroma-key video overlays from ECU and datalogger files. Designed to be composited over dashcam or track footage in any video editor.
 
+https://www.youtube.com/watch?v=mCYPJKL59rA
+
 ## Features
 
 - **Multiple dash styles** — Gauge-based, text column, logger/trace, and more
