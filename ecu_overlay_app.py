@@ -29,15 +29,35 @@ try:
     import os as _os
     # Add script directory to path so renderer_pil can be found
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    import renderer_multistyle as _MS
-    _MS_OK = True
     import renderer_pil as _R
     DEPS_OK = True
 except ImportError as e:
     DEPS_OK = False
+    MISSING_DEP = str(e)
+
+# renderer_multistyle — optional secondary renderer; absence must not disable core
+try:
+    import renderer_multistyle as _MS
+    _MS_OK = True
+except ImportError:
     _MS_OK = False
     _MS = None
-    MISSING_DEP = str(e)
+
+# trackmap — optional standalone track-map overlay renderer
+try:
+    import trackmap_render as _TM
+    _TM_OK = True
+except ImportError:
+    _TM_OK = False
+    _TM = None
+
+# gtrace — optional standalone G-force trace overlay renderer
+try:
+    import gtrace_render as _GT
+    _GT_OK = True
+except ImportError:
+    _GT_OK = False
+    _GT = None
 
 # VBO reader — optional, loaded separately so missing file gives clear error
 try:
@@ -477,49 +497,43 @@ FPS = 30
 # GUI
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── THEMES ────────────────────────────────────────────────────────────────
-THEMES = {
-    "Dark": {
-        "DARK_BG":    "#0d0d14", "DARK_PANEL": "#14141f", "DARK_CARD": "#1a1a28",
-        "ACCENT":     "#ff8c00", "ACCENT2":    "#32ade6",
-        "TEXT_PRI":   "#f0f0ff", "TEXT_SEC":   "#888899", "BORDER_COL": "#2a2a40",
-    },
-    "Slate": {
-        "DARK_BG":    "#1e2130", "DARK_PANEL": "#262a3a", "DARK_CARD": "#2e3248",
-        "ACCENT":     "#f0a500", "ACCENT2":    "#4fc3f7",
-        "TEXT_PRI":   "#e8eaf6", "TEXT_SEC":   "#9fa8c0", "BORDER_COL": "#3d4160",
-    },
-    "White": {
-        "DARK_BG":    "#f0f2f5", "DARK_PANEL": "#ffffff", "DARK_CARD": "#e8eaed",
-        "ACCENT":     "#d35400", "ACCENT2":    "#1565c0",
-        "TEXT_PRI":   "#1a1a2e", "TEXT_SEC":   "#555577", "BORDER_COL": "#c0c4cc",
-    },
-}
-# Load saved theme preference
-try:
-    import json as _json
-    _pref_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".ecu_theme")
-    _ACTIVE_THEME = _json.load(open(_pref_file)).get("theme", "Slate")
-    if _ACTIVE_THEME not in THEMES: _ACTIVE_THEME = "Slate"
-except Exception:
-    _ACTIVE_THEME = "Slate"
-_T = THEMES[_ACTIVE_THEME]
-DARK_BG    = _T["DARK_BG"]
-DARK_PANEL = _T["DARK_PANEL"]
-DARK_CARD  = _T["DARK_CARD"]
-ACCENT     = _T["ACCENT"]
-ACCENT2    = _T["ACCENT2"]
-TEXT_PRI   = _T["TEXT_PRI"]
-TEXT_SEC   = _T["TEXT_SEC"]
-BORDER_COL = _T["BORDER_COL"]
+# ── FIXED COLOUR SCHEME ─────────────────────────────────────────────────────
+# Single locked theme (matches the dash design language: dark slate + cyan accent)
+DARK_BG    = "#101018"   # window background
+DARK_PANEL = "#101018"   # input fields / sunken areas
+DARK_CARD  = "#1a1a22"   # cards / panels
+ACCENT     = "#3fb6d6"   # cyan accent (headings, highlights)
+ACCENT2    = "#3fb6d6"   # secondary accent (stats) — same cyan family
+TEXT_PRI   = "#e8e8ee"   # primary text
+TEXT_SEC   = "#8a8a96"   # secondary / muted text
+BORDER_COL = "#33333f"   # borders / dividers
 GREEN_UI   = "#39d353"
 RED_UI     = "#ff3b5c"
 
-FONT_TITLE  = ("Courier New", 22, "bold")
-FONT_HEAD   = ("Courier New", 11, "bold")
-FONT_BODY   = ("Courier New", 10)
-FONT_SMALL  = ("Courier New", 9)
-FONT_MONO   = ("Courier New", 10)
+
+def _pick_font_family(preferred):
+    """Return the first installed font family from `preferred`, else a sane default."""
+    try:
+        import tkinter.font as _tkfont
+        avail = set(_tkfont.families())
+        for fam in preferred:
+            if fam in avail:
+                return fam
+    except Exception:
+        pass
+    return preferred[-1]
+
+# UI font (clean, readable) and a monospace for data/values
+_UI_FAMILY  = _pick_font_family(["Segoe UI Semibold", "Segoe UI", "Calibri",
+                                  "Helvetica", "Arial", "TkDefaultFont"])
+_MONO_FAMILY = _pick_font_family(["Consolas", "DejaVu Sans Mono", "Courier New",
+                                  "TkFixedFont"])
+
+FONT_TITLE  = (_UI_FAMILY, 24, "bold")
+FONT_HEAD   = (_UI_FAMILY, 12, "bold")
+FONT_BODY   = (_UI_FAMILY, 11, "bold")
+FONT_SMALL  = (_UI_FAMILY, 10, "bold")
+FONT_MONO   = (_MONO_FAMILY, 11, "bold")
 
 class App(tk.Tk):
     def __init__(self):
@@ -546,6 +560,14 @@ class App(tk.Tk):
         self.invert_glat   = tk.BooleanVar(value=False)
         self.invert_glong  = tk.BooleanVar(value=False)
         self.invert_throttle = tk.BooleanVar(value=False)
+        # ── Optional extra channels A & B ──────────────────────────────────
+        # Each: a source-column selection + a 4-letter display label.
+        self.chanA_col   = tk.StringVar(value="(None)")
+        self.chanA_label = tk.StringVar(value="")
+        self.chanA_unit  = tk.StringVar(value="")
+        self.chanB_col   = tk.StringVar(value="(None)")
+        self.chanB_label = tk.StringVar(value="")
+        self.chanB_unit  = tk.StringVar(value="")
         self._render_start_time = None
         self._preview_window    = None
         self.filter_rpm    = tk.BooleanVar(value=False)
@@ -554,6 +576,10 @@ class App(tk.Tk):
         self.resolution_var  = tk.StringVar(value="1080p (1920×750)")
         self.g_trail_secs    = tk.StringVar(value="120")
         self.g_trail_speed_colour = tk.BooleanVar(value=True)
+        # Optional separate track-map overlay video
+        self.gen_trackmap = tk.BooleanVar(value=False)
+        # Optional separate G-force trace overlay video
+        self.gen_gtrace = tk.BooleanVar(value=False)
         self.lap_offset_var  = tk.StringVar(value="0")
         self.lap_min_speed   = tk.StringVar(value="200")
         self.lap_est_time    = tk.StringVar(value="60")
@@ -966,14 +992,46 @@ class App(tk.Tk):
                         font=FONT_SMALL, relief="flat", cursor="hand2").grid(
             row=2, column=3, sticky="w", padx=(16,0), pady=(8,0))
 
+        # ── Track map overlay option ──────────────────────────────────────────
+        tk.Checkbutton(tr, text="Generate track map graphic",
+                        variable=self.gen_trackmap,
+                        bg=DARK_CARD, fg=ACCENT, activebackground=DARK_CARD,
+                        activeforeground=ACCENT, selectcolor=DARK_PANEL,
+                        font=FONT_BODY, relief="flat", cursor="hand2").grid(
+            row=3, column=0, columnspan=4, sticky="w", padx=(0,0), pady=(10,0))
+        tk.Label(tr,
+                 text=("Renders a SEPARATE video file: the track outline from GPS,\n"
+                       "coloured by speed, with a moving position dot. Overlay it\n"
+                       "anywhere over your footage (needs GPS lat/lon in the log)."),
+                 font=FONT_SMALL, bg=DARK_CARD, fg=TEXT_SEC, justify="left").grid(
+            row=4, column=0, columnspan=4, sticky="w", padx=(24,0), pady=(2,2))
+
+        tk.Checkbutton(tr, text="Generate G-force trace graphic",
+                        variable=self.gen_gtrace,
+                        bg=DARK_CARD, fg=ACCENT, activebackground=DARK_CARD,
+                        activeforeground=ACCENT, selectcolor=DARK_PANEL,
+                        font=FONT_BODY, relief="flat", cursor="hand2").grid(
+            row=5, column=0, columnspan=4, sticky="w", padx=(0,0), pady=(8,0))
+        tk.Label(tr,
+                 text=("Renders a SEPARATE video file: the G-force trace (lateral "
+                       "to ±2.5G,\nlongitudinal to ±2.0G), speed-coloured, with live "
+                       "Lat/Lon readouts.\nOverlay it anywhere over your footage."),
+                 font=FONT_SMALL, bg=DARK_CARD, fg=TEXT_SEC, justify="left").grid(
+            row=6, column=0, columnspan=4, sticky="w", padx=(24,0), pady=(2,2))
+
         self._section(outer, 9, "⑥ STYLE")
         sty = self._card(outer, 10)
         sty.columnconfigure(1, weight=1)
         tk.Label(sty, text="Visual Style:", font=FONT_HEAD,
                  bg=DARK_CARD, fg=TEXT_SEC).grid(row=0, column=0, sticky="w", padx=(0,10))
         ttk.Combobox(sty, textvariable=self.style_var,
-                      values=["Dash 1 (white gauge)", "Dash 2 (black gauge)", "Dash 3", "Dash 4", "Dash 5", "Dash 6 (Logger)", "Vertical Text", "Horizontal Text"],
-                      width=14, font=FONT_MONO, state="readonly").grid(
+                      values=["Dash 1 (white gauge)", "Dash 2 (black gauge)",
+                              "Dash 3", "Dash 4", "Dash 5", "Dash 6 (Logger)",
+                              "Dash 6b (Wide Logger)",
+                              "Dash 8", "Dash 8 (Chroma)",
+                              "Dash 8b (bars inside)", "Dash 8b (bars inside, Chroma)",
+                              "Vertical Text", "Horizontal Text"],
+                      width=22, font=FONT_MONO, state="readonly").grid(
             row=0, column=1, sticky="w")
         def _on_style_change(*_):
             _sn1 = self.style_var.get()
@@ -995,29 +1053,6 @@ class App(tk.Tk):
         tk.Label(sty, textvariable=self._file_info_var, font=FONT_SMALL,
                  bg=DARK_CARD, fg=ACCENT).grid(row=2, column=0, columnspan=4,
                                                 sticky="w", pady=(4,0))
-        # Theme selector
-        tk.Label(sty, text="App Theme:", font=FONT_HEAD,
-                 bg=DARK_CARD, fg=TEXT_SEC).grid(row=3, column=0, sticky="w",
-                                                  padx=(0,10), pady=(8,0))
-        self._theme_var = tk.StringVar(value=_ACTIVE_THEME)
-        _theme_cb = ttk.Combobox(sty, textvariable=self._theme_var,
-                                  values=list(THEMES.keys()),
-                                  width=10, font=FONT_MONO, state="readonly")
-        _theme_cb.grid(row=3, column=1, sticky="w", pady=(8,0))
-        self._fix_combo(_theme_cb)
-        def _apply_theme(*_):
-            _tn = self._theme_var.get()
-            try:
-                import json as _json
-                _pf = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".ecu_theme")
-                _json.dump({"theme": _tn}, open(_pf, "w"))
-            except Exception:
-                pass
-            self.status_var.set(f"Theme '{_tn}' saved — restart to apply")
-        self._theme_var.trace_add("write", _apply_theme)
-        tk.Label(sty, text="(restart to apply)", font=FONT_SMALL,
-                 bg=DARK_CARD, fg=TEXT_SEC).grid(row=3, column=2, sticky="w",
-                                                   padx=(8,0), pady=(8,0))
 
 
 
@@ -1639,6 +1674,16 @@ class App(tk.Tk):
         else:
             rows['lon'] = np.full(len(tt), np.nan)
 
+        # ── Optional channels A & B ─────────────────────
+        for _ck, _cv in [('chanA', self.chanA_col), ('chanB', self.chanB_col)]:
+            _src = _cv.get() if hasattr(_cv, 'get') else None
+            if _src and _src not in ('(None)', '(not detected)', '') and _src in df.columns:
+                _vv = pd.to_numeric(df[_src], errors='coerce')
+                _vv = _vv.interpolate(method='linear').ffill().bfill().fillna(0)
+                rows[_ck] = np.interp(tt, df[self.ts_col].values, _vv.values)
+            else:
+                rows[_ck] = np.nan   # sentinel: not selected → not displayed
+
         self._working_rows = rows
 
 
@@ -1878,6 +1923,17 @@ class App(tk.Tk):
 
         import math as _math
         rows = self._working_rows
+        # Safety net: ensure selected channel columns are present in working rows
+        try:
+            _need_chan = (self.chanA_col.get() not in ('(None)','(not detected)','') or
+                          self.chanB_col.get() not in ('(None)','(not detected)',''))
+            if _need_chan and (rows is None or 'chanA' not in rows.columns):
+                _cmap = {ch2: v2.get() for ch2, v2 in self.col_vars.items()
+                         if v2.get() not in ('(not detected)', '(None)', '')}
+                self._prepare_working_df(_cmap)
+                rows = self._working_rows
+        except Exception:
+            pass
         # Apply inversions
         if self.invert_glat.get():
             rows = rows.copy(); rows["g_lat"] = -rows["g_lat"]
@@ -1898,7 +1954,11 @@ class App(tk.Tk):
         _R._GAUGE_BG_CACHE.clear()
         GS = int(460*scale); GX = int(10*scale)
         cx = GX+GS//2; cy = out_h_actual//2; r = GS//2-int(12*scale)
-        bg = _R._build_gauge_bg(cx, cy, r, w=out_w, h=out_h_actual, rpm_max=rpm_max, P=P)
+        # Full-frame / box-grid / dash8 styles build their own background — skip gauge bg.
+        _no_gauge = (P.get("dash8_layout") or P.get("style7_layout") or P.get("style8_layout")
+                     or P.get("style11_layout") or P.get("style12_layout")
+                     or P.get("style13_layout") or P.get("style14_layout") or P.get("style20_layout"))
+        bg = None if _no_gauge else _R._build_gauge_bg(cx, cy, r, w=out_w, h=out_h_actual, rpm_max=rpm_max, P=P)
 
         # Find frame at t_preview
         idx = (rows['ts'] - t_preview).abs().idxmin()
@@ -1927,7 +1987,12 @@ class App(tk.Tk):
             speed_colour=speed_col, P=P,
             trace_throttle=trace['throttle'].tolist() if 'throttle' in trace.columns else None,
             trace_brake=trace['brake'].tolist() if 'brake' in trace.columns else None,
-            trace_gear=trace['gear'].tolist() if 'gear' in trace.columns else None)
+            trace_gear=trace['gear'].tolist() if 'gear' in trace.columns else None,
+            chanA=float(row['chanA']) if 'chanA' in row.index else float('nan'),
+            chanA_label=self.chanA_label.get(),
+            chanB=float(row['chanB']) if 'chanB' in row.index else float('nan'),
+            chanB_label=self.chanB_label.get(),
+            chanA_unit=self.chanA_unit.get(), chanB_unit=self.chanB_unit.get())
     def _section(self, parent, row, text):
         f = tk.Frame(parent, bg=DARK_BG)
         f.grid(row=row, column=0, sticky="ew", pady=(12,2))
@@ -2091,6 +2156,65 @@ class App(tk.Tk):
                 row=r, column=4, sticky="w", padx=(4,0))
 
         self.col_frame.columnconfigure(1, weight=1)
+
+        # ── Optional extra channels A & B ──────────────────
+        _opt_start = r + 2
+        tk.Frame(self.col_frame, bg=BORDER_COL, height=1).grid(
+            row=_opt_start-1, column=0, columnspan=5, sticky="ew", pady=(12,8))
+        tk.Label(self.col_frame, text="Optional Channels",
+                 font=FONT_HEAD, bg=DARK_CARD, fg=ACCENT).grid(
+            row=_opt_start, column=0, columnspan=3, sticky="w", pady=(0,2))
+        tk.Label(self.col_frame,
+                 text="Add up to two extra channels to display on the dash. "
+                      "Pick a column and enter a short label (max 4 characters).",
+                 font=FONT_SMALL, bg=DARK_CARD, fg=TEXT_SEC).grid(
+            row=_opt_start+1, column=0, columnspan=5, sticky="w", pady=(0,6))
+        _oh = ["Channel", "Source Column", "Label"]
+        for c, h in enumerate(_oh):
+            tk.Label(self.col_frame, text=h, font=FONT_HEAD,
+                     bg=DARK_CARD, fg=ACCENT).grid(
+                row=_opt_start+2, column=c, sticky="w", padx=(0,20), pady=(0,4))
+        def _mk_optrow(rr, name, col_var, lbl_var, unit_var=None):
+            tk.Label(self.col_frame, text=name, font=FONT_HEAD,
+                     bg=DARK_CARD, fg=TEXT_PRI, width=16, anchor="w").grid(
+                row=rr, column=0, sticky="w", pady=3)
+            _cb = ttk.Combobox(self.col_frame, textvariable=col_var,
+                               values=["(None)"] + columns, width=34,
+                               font=FONT_MONO, state="readonly")
+            _cb.grid(row=rr, column=1, sticky="w", padx=(0,20), pady=3)
+            self._fix_combo(_cb)
+            def _limit_label(*_a, v=lbl_var):
+                s = v.get()
+                if len(s) > 4: v.set(s[:4])
+            lbl_var.trace_add("write", _limit_label)
+            # label + unit live in a small sub-frame so the unit is a tight 1-char box
+            _lf = tk.Frame(self.col_frame, bg=DARK_CARD)
+            _lf.grid(row=rr, column=2, sticky="w", pady=3)
+            tk.Entry(_lf, textvariable=lbl_var, width=6,
+                     font=FONT_MONO, bg=DARK_PANEL, fg=TEXT_PRI,
+                     insertbackground=TEXT_PRI, relief="flat",
+                     highlightthickness=1, highlightbackground=BORDER_COL,
+                     highlightcolor=ACCENT).pack(side="left")
+            if unit_var is not None:
+                def _limit_unit(*_a, v=unit_var):
+                    s = v.get()
+                    if len(s) > 1: v.set(s[:1])   # single character only
+                unit_var.trace_add("write", _limit_unit)
+                tk.Label(_lf, text="unit:", font=FONT_SMALL,
+                         bg=DARK_CARD, fg=TEXT_SEC).pack(side="left", padx=(8,2))
+                tk.Entry(_lf, textvariable=unit_var, width=2,
+                         font=FONT_MONO, bg=DARK_PANEL, fg=TEXT_PRI,
+                         insertbackground=TEXT_PRI, relief="flat",
+                         highlightthickness=1, highlightbackground=BORDER_COL,
+                         highlightcolor=ACCENT, justify="center").pack(side="left")
+            def _on_opt_change(_e=None):
+                if self.df is not None:
+                    col_map = {ch2: v2.get() for ch2, v2 in self.col_vars.items()
+                               if v2.get() not in ('(not detected)', '(None)', '')}
+                    self._prepare_working_df(col_map)
+            _cb.bind('<<ComboboxSelected>>', _on_opt_change)
+        _mk_optrow(_opt_start+3, "Channel A", self.chanA_col, self.chanA_label, self.chanA_unit)
+        _mk_optrow(_opt_start+4, "Channel B", self.chanB_col, self.chanB_label, self.chanB_unit)
 
     # ── Actions ────────────────────────────────────────────────────────────────
     def _browse_file(self):
@@ -2514,6 +2638,16 @@ class App(tk.Tk):
         else:
             rows['lon'] = np.full(len(tt), np.nan)
 
+        # ── Optional channels A & B ─────────────────────
+        for _ck, _cv in [('chanA', self.chanA_col), ('chanB', self.chanB_col)]:
+            _src = _cv.get() if hasattr(_cv, 'get') else None
+            if _src and _src not in ('(None)', '(not detected)', '') and _src in df.columns:
+                _vv = pd.to_numeric(df[_src], errors='coerce')
+                _vv = _vv.interpolate(method='linear').ffill().bfill().fillna(0)
+                rows[_ck] = np.interp(tt, df[self.ts_col].values, _vv.values)
+            else:
+                rows[_ck] = np.nan   # sentinel: not selected → not displayed
+
         self._working_rows = rows
 
 
@@ -2753,6 +2887,17 @@ class App(tk.Tk):
 
         import math as _math
         rows = self._working_rows
+        # Safety net: ensure selected channel columns are present in working rows
+        try:
+            _need_chan = (self.chanA_col.get() not in ('(None)','(not detected)','') or
+                          self.chanB_col.get() not in ('(None)','(not detected)',''))
+            if _need_chan and (rows is None or 'chanA' not in rows.columns):
+                _cmap = {ch2: v2.get() for ch2, v2 in self.col_vars.items()
+                         if v2.get() not in ('(not detected)', '(None)', '')}
+                self._prepare_working_df(_cmap)
+                rows = self._working_rows
+        except Exception:
+            pass
         # Apply inversions
         if self.invert_glat.get():
             rows = rows.copy(); rows["g_lat"] = -rows["g_lat"]
@@ -2773,7 +2918,11 @@ class App(tk.Tk):
         _R._GAUGE_BG_CACHE.clear()
         GS = int(460*scale); GX = int(10*scale)
         cx = GX+GS//2; cy = out_h_actual//2; r = GS//2-int(12*scale)
-        bg = _R._build_gauge_bg(cx, cy, r, w=out_w, h=out_h_actual, rpm_max=rpm_max, P=P)
+        # Full-frame / box-grid / dash8 styles build their own background — skip gauge bg.
+        _no_gauge = (P.get("dash8_layout") or P.get("style7_layout") or P.get("style8_layout")
+                     or P.get("style11_layout") or P.get("style12_layout")
+                     or P.get("style13_layout") or P.get("style14_layout") or P.get("style20_layout"))
+        bg = None if _no_gauge else _R._build_gauge_bg(cx, cy, r, w=out_w, h=out_h_actual, rpm_max=rpm_max, P=P)
 
         # Find frame at t_preview
         idx = (rows['ts'] - t_preview).abs().idxmin()
@@ -2802,10 +2951,12 @@ class App(tk.Tk):
             speed_colour=speed_col, P=P,
             trace_throttle=trace['throttle'].tolist() if 'throttle' in trace.columns else None,
             trace_brake=trace['brake'].tolist() if 'brake' in trace.columns else None,
-            trace_gear=trace['gear'].tolist() if 'gear' in trace.columns else None)
-
-
-        # Show in popup
+            trace_gear=trace['gear'].tolist() if 'gear' in trace.columns else None,
+            chanA=float(row['chanA']) if 'chanA' in row.index else float('nan'),
+            chanA_label=self.chanA_label.get(),
+            chanB=float(row['chanB']) if 'chanB' in row.index else float('nan'),
+            chanB_label=self.chanB_label.get(),
+            chanA_unit=self.chanA_unit.get(), chanB_unit=self.chanB_unit.get())
         from PIL import ImageTk
         if self._preview_window and tk.Toplevel.winfo_exists(self._preview_window):
             self._preview_window.destroy()
@@ -2881,7 +3032,7 @@ class App(tk.Tk):
             if not P: continue
             # Determine natural resolution for this style
             is_full = P.get("style7_layout") or P.get("style8_layout")
-            no_gauge = is_full or P.get("style11_layout") or P.get("style12_layout") or P.get("style13_layout") or P.get("style14_layout")
+            no_gauge = is_full or P.get("style11_layout") or P.get("style12_layout") or P.get("style13_layout") or P.get("style14_layout") or P.get("style20_layout") or P.get("dash8_layout")
             nat_w = HALF_W
             nat_h = OUT_H if is_full else int(HALF_W * 750 / 1920)
             s_scale = nat_w / _R.W_VID
@@ -2898,7 +3049,12 @@ class App(tk.Tk):
                 brake_pct=float(row.get("brake",0)),
                 rpm_max=rpm_max,
                 peak_rpm=int(trail["rpm"].max()) if "rpm" in trail.columns and len(trail) else None,
-                trace_speed=None, speed_colour=False, P=P)
+                trace_speed=None, speed_colour=False, P=P,
+                chanA=float(row.get("chanA")) if "chanA" in row.index else float('nan'),
+                chanA_label=self.chanA_label.get(),
+                chanB=float(row.get("chanB")) if "chanB" in row.index else float('nan'),
+                chanB_label=self.chanB_label.get(),
+                chanA_unit=self.chanA_unit.get(), chanB_unit=self.chanB_unit.get())
             # Replace chroma with black for export, keep for preview
             if replace_chroma:
                 chroma = tuple(P["chroma"])
@@ -2930,6 +3086,17 @@ class App(tk.Tk):
             laps = []
         import math as _math
         rows = self._working_rows
+        # Safety net: ensure selected channel columns are present in working rows
+        try:
+            _need_chan = (self.chanA_col.get() not in ('(None)','(not detected)','') or
+                          self.chanB_col.get() not in ('(None)','(not detected)',''))
+            if _need_chan and (rows is None or 'chanA' not in rows.columns):
+                _cmap = {ch2: v2.get() for ch2, v2 in self.col_vars.items()
+                         if v2.get() not in ('(not detected)', '(None)', '')}
+                self._prepare_working_df(_cmap)
+                rows = self._working_rows
+        except Exception:
+            pass
         rpm_max = max(int(_math.ceil(float(rows['rpm'].max())/1000)*1000), 6000)
         g_trail = float(self.g_trail_secs.get() or 5)
         speed_col = self.g_trail_speed_colour.get()
@@ -3015,6 +3182,93 @@ class App(tk.Tk):
         """Fix combobox dropdown position when inside a scrolled canvas."""
         # No override needed — let ttk handle dropdown natively
         pass
+
+    def _render_overlays(self, t_start, t_end, main_output_path, fps):
+        """Render the optional standalone overlay videos (track map and/or
+        G-force trace) sequentially on a background thread, after the main render."""
+        import os as _os
+        import numpy as _np
+        rows = self._working_rows
+        _base, _ext = _os.path.splitext(main_output_path)
+
+        # Build the job queue based on what's ticked + data availability
+        jobs = []   # each: (label, module, out_path, kwargs, skip_reason)
+        if self.gen_trackmap.get():
+            has_gps = (_TM_OK and rows is not None and 'lat' in rows.columns
+                       and 'lon' in rows.columns
+                       and not _np.isnan(rows['lat'].to_numpy()).all()
+                       and not _np.isnan(rows['lon'].to_numpy()).all())
+            if not _TM_OK:
+                jobs.append(("track map", None, None, None, "trackmap_render.py not found"))
+            elif not has_gps:
+                jobs.append(("track map", None, None, None, "no usable GPS lat/lon"))
+            else:
+                jobs.append(("track map", _TM, f"{_base}_trackmap.mp4",
+                             dict(resolution=(720, 720),
+                                  speed_colour=self.g_trail_speed_colour.get()), None))
+        if self.gen_gtrace.get():
+            import numpy as _np2
+            _has_cols = (_GT_OK and rows is not None and 'g_lat' in rows.columns
+                         and 'g_long' in rows.columns)
+            # The working df fills unmapped channels with 0.0, so "columns exist"
+            # isn't enough — require some non-zero G data, else the trace is empty.
+            _has_data = False
+            if _has_cols:
+                _gl = _np2.asarray(rows['g_lat'], dtype=float)
+                _gg = _np2.asarray(rows['g_long'], dtype=float)
+                _has_data = bool(_np2.nanmax(_np2.abs(_gl)) > 0.01
+                                 or _np2.nanmax(_np2.abs(_gg)) > 0.01)
+            if not _GT_OK:
+                jobs.append(("G-trace", None, None, None, "gtrace_render.py not found"))
+            elif not _has_data:
+                jobs.append(("G-trace", None, None, None,
+                             "no G-force data (map G-Lat / G-Long columns first)"))
+            else:
+                jobs.append(("G-trace", _GT, f"{_base}_gtrace.mp4",
+                             dict(resolution=(720, 600),
+                                  speed_colour=self.g_trail_speed_colour.get()), None))
+
+        app_ref = self
+        made = []
+        skipped = []
+
+        def _run_jobs():
+            for (label, module, out_path, kwargs, skip) in jobs:
+                if app_ref._cancel_flag:
+                    break
+                if skip is not None:
+                    skipped.append(f"{label}: {skip}")
+                    continue
+                _done = {}
+                def _prog(pct, _lbl=label):
+                    self.progress.set(int(pct*100))
+                    self.status_var.set(f"Rendering {_lbl}… {int(pct*100)}%")
+                def _dn(path, _lbl=label):
+                    _done['path'] = path
+                def _er(msg, _lbl=label):
+                    _done['err'] = msg
+                self.status_var.set(f"Rendering {label}…")
+                module.render_video(rows, t_start, t_end, out_path, fps,
+                                    _prog, _dn, _er,
+                                    lambda: app_ref._cancel_flag, **kwargs)
+                if 'path' in _done:
+                    made.append(_done['path'])
+                elif 'err' in _done:
+                    skipped.append(f"{label}: {_done['err']}")
+            # Finished — report on the UI thread
+            self._unlock_ui()
+            if app_ref._cancel_flag:
+                self.status_var.set("Cancelled.")
+                return
+            _msg = f"Overlay video:\n{main_output_path}\n"
+            if made:
+                _msg += "\nAlso created:\n" + "\n".join(made)
+            if skipped:
+                _msg += "\n\nSkipped:\n" + "\n".join(skipped)
+            self.status_var.set("✓ Done!  All graphics saved.")
+            messagebox.showinfo("Complete", _msg)
+
+        threading.Thread(target=_run_jobs, daemon=True).start()
 
     def _start_render(self):
         if not DEPS_OK:
@@ -3132,6 +3386,10 @@ class App(tk.Tk):
 
         def done_cb():
             self.progress.set(100)
+            # Render optional overlay graphics as separate files, in sequence.
+            if not self._cancel_flag and (self.gen_trackmap.get() or self.gen_gtrace.get()):
+                self._render_overlays(t_start, t_end, output_path, fps)
+                return
             self._unlock_ui()
             if self._cancel_flag:
                 self.status_var.set("Cancelled.")
@@ -3267,7 +3525,12 @@ class App(tk.Tk):
                   lap_min_spd, lap_est_time,
                   self.g_trail_speed_colour.get(), style,
                   _precomputed_laps),
-            kwargs={},
+            kwargs={
+                "chanA_label": self.chanA_label.get(),
+                "chanB_label": self.chanB_label.get(),
+                "chanA_unit": self.chanA_unit.get(),
+                "chanB_unit": self.chanB_unit.get(),
+            },
             daemon=True)
         t.start()
 
