@@ -1,30 +1,22 @@
 # Getting LapStudio running
 
-Everything in this zip is part of LapStudio. Two things are **not** in it,
-because they are other people's software and not ours to redistribute — you
-install them yourself, once.
+**If you have the release zip, there is nothing to install.** Unzip it, run
+`LapStudio.exe`, and everything it needs is already inside — ffmpeg for video
+export and AiM's reader for `.drk` / `.xrk` logs.
+
+Skip to "First render" below.
 
 ---
 
-## 1. Python
+## Running from source instead
 
-Install Python 3.10 or newer from <https://www.python.org/downloads/>.
+Only needed if you are working on the code rather than using a release.
 
-On Windows, tick **"Add Python to PATH"** during setup. If you miss it, the
-launcher below will not find Python.
+**1. Python 3.10 or newer** from <https://www.python.org/downloads/>. On Windows
+tick **"Add Python to PATH"** during setup.
 
-## 2. Unzip
-
-Put the folder wherever you like — Desktop is fine. Keep the files together: the
-app looks for the two `.ttf` fonts beside `ecu_overlay_app.py`.
-
-## 3. Start it
-
-**Windows:** double-click **`run.bat`**. On the first run it installs the four
-Python packages it needs (Pillow, numpy, pandas, aggdraw) and then starts the
-app. After that it just starts.
-
-**macOS / Linux:**
+**2. Start it.** On Windows, double-click `run.bat` — the first run installs the
+four packages it needs and then starts the app. Otherwise:
 
 ```bash
 pip install -r requirements.txt
@@ -33,27 +25,14 @@ python ecu_overlay_app.py
 
 On Debian or Ubuntu you may also need `sudo apt install python3-tk`.
 
-## 4. ffmpeg — needed to export video
+**3. ffmpeg**, for exporting video. Download from
+<https://ffmpeg.org/download.html> and either put `ffmpeg.exe` beside
+`ecu_overlay_app.py` or add it to your `PATH`. A *static* build is one
+self-contained file; a *shared* build also needs its `av*.dll` and `sw*.dll`
+files kept alongside it.
 
-The app previews without it, but writing video files needs ffmpeg.
-
-Download a build from <https://ffmpeg.org/download.html> (on Windows the
-gyan.dev or BtbN builds are the usual choice), then either:
-
-- put `ffmpeg.exe` in the same folder as `ecu_overlay_app.py`, **or**
-- add ffmpeg to your system `PATH`
-
-If you take a *shared* build, keep its `av*.dll` and `sw*.dll` files next to
-`ffmpeg.exe` — it will not start without them. A *static* build is a single
-file and simpler.
-
-## 5. AiM logs only — the RaceStudio DLL
-
-CSV and VBO logs need nothing extra. **Skip this step unless you are opening
-AiM `.drk` / `.xrk` files.**
-
-AiM's reader library ships with RaceStudio 3. Copy these from your RaceStudio
-installation into the LapStudio folder:
+**4. AiM logs only.** CSV and VBO need nothing extra. For `.drk` / `.xrk`, copy
+these from a RaceStudio 3 installation into the LapStudio folder:
 
 ```
 MatLabXRK-2022-64-ReleaseU.dll
@@ -64,16 +43,10 @@ pthreadVC2_x64.dll
 ```
 
 You may also need the **Microsoft Visual C++ 2008 SP1 x64 redistributable**,
-which provides `msvcr90.dll`. Install it from Microsoft rather than copying the
-DLL around.
+which provides `msvcr90.dll`.
 
-If a `.drk` file fails to open, run:
-
-```
-python diagnose_aim.py "your log.drk"
-```
-
-It reports which dependency is missing, and what the app can see in the file.
+If a `.drk` will not open, run `python diagnose_aim.py "your log.drk"` — it
+reports which dependency is missing and what the app can see in the file.
 
 ---
 

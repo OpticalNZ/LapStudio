@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('BigShoulders-Bold.ttf', '.'), ('Poppins-Bold.ttf', '.'), ('ffmpeg.exe', '.')]
-binaries = [('avcodec-62.dll', '.'), ('avformat-62.dll', '.'), ('avfilter-11.dll', '.'), ('avutil-60.dll', '.'), ('swscale-9.dll', '.'), ('swresample-6.dll', '.'), ('avdevice-62.dll', '.')]
+binaries = []
 hiddenimports = []
 tmp_ret = collect_all('aggdraw')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

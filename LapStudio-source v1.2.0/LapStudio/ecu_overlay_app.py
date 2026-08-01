@@ -4,23 +4,6 @@ GUI application for generating chroma-key video overlays from ECU datalogs.
 Supports Emtron, Link ECU, and any CSV/TSV structured log file.
 """
 
-import os
-import sys
-
-# ── AiM helper mode ─────────────────────────────────────────────────────────
-# Reading an AiM .drk goes through a separate process, so a crash in AiM's DLL
-# cannot take the app down with it. Outside a bundle that process is
-# "python xrk_helper.py"; inside a PyInstaller build there is no python.exe to
-# call, so the exe re-runs ITSELF with this flag and dispatches straight to the
-# helper. Must happen before tkinter is touched: this process draws no window.
-if len(sys.argv) >= 4 and sys.argv[1] == "--xrk-helper":
-    sys.path.insert(0, getattr(sys, "_MEIPASS",
-                               os.path.dirname(os.path.abspath(__file__))))
-    del sys.argv[1]                      # helper expects <file> <out> as 1 and 2
-    import xrk_helper
-    xrk_helper.main()
-    sys.exit(0)
-
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading

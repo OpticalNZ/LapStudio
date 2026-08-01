@@ -27,13 +27,6 @@ def find_dll(start_dir=None):
     if start_dir:
         dirs.append(os.path.abspath(start_dir))
     dirs.append(os.path.dirname(os.path.abspath(__file__)))
-    # A frozen build unpacks bundled data to _MEIPASS, and users may also drop
-    # the DLL next to the exe itself.
-    _mei = getattr(sys, "_MEIPASS", None)
-    if _mei:
-        dirs.append(_mei)
-    if getattr(sys, "frozen", False):
-        dirs.append(os.path.dirname(os.path.abspath(sys.executable)))
     # RaceStudio3 install locations
     for p in [r'C:\Program Files (x86)\AIM\RaceStudio3',
               r'C:\Program Files\AIM\RaceStudio3']:
@@ -133,12 +126,11 @@ def read_xrk(filepath, progress_cb=None):
     prog(5, f'Found DLL: {os.path.basename(dll_path)}')
 
     # Copy helper to DLL folder so it runs alongside the DLL
+    import shutil
     helper_in_dll_dir = os.path.join(dll_dir, 'xrk_helper.py')
-    if not getattr(sys, "frozen", False):
-        import shutil
-        if not os.path.isfile(helper_in_dll_dir) or \
-           os.path.getmtime(_HELPER) > os.path.getmtime(helper_in_dll_dir):
-            shutil.copy2(_HELPER, helper_in_dll_dir)
+    if not os.path.isfile(helper_in_dll_dir) or \
+       os.path.getmtime(_HELPER) > os.path.getmtime(helper_in_dll_dir):
+        shutil.copy2(_HELPER, helper_in_dll_dir)
 
     # Write output to temp file
     tmp_fd, tmp_path = tempfile.mkstemp(suffix='.json', prefix='xrk_out_')
@@ -146,15 +138,7 @@ def read_xrk(filepath, progress_cb=None):
 
     try:
         prog(8, 'Starting DLL reader process…')
-        if getattr(sys, "frozen", False):
-            # In a PyInstaller build sys.executable is LapStudio.exe, not python,
-            # so running "python xrk_helper.py" is impossible: the old command
-            # relaunched the GUI with the helper path as argv[1] and then timed
-            # out. The exe re-runs ITSELF in helper mode instead - see the
-            # --xrk-helper branch at the top of ecu_overlay_app.py.
-            cmd = [sys.executable, "--xrk-helper", filepath, tmp_path]
-        else:
-            cmd = [sys.executable, helper_in_dll_dir, filepath, tmp_path]
+        cmd = [sys.executable, helper_in_dll_dir, filepath, tmp_path]
         # Run from DLL dir with DLL dir prepended to PATH
         env = os.environ.copy()
         env['PATH'] = dll_dir + os.pathsep + env.get('PATH', '')
@@ -181,12 +165,9 @@ def read_xrk(filepath, progress_cb=None):
             if _miss:
                 # Re-use the helper's own guidance (copy vs install)
                 try:
-                    if getattr(sys, "frozen", False):
-                        import xrk_helper as _xh          # bundled as a module
-                    else:
-                        import importlib.util as _ilu
-                        _spec = _ilu.spec_from_file_location('_xh', _HELPER)
-                        _xh = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_xh)
+                    import importlib.util as _ilu
+                    _spec = _ilu.spec_from_file_location('_xh', _HELPER)
+                    _xh = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_xh)
                     _guide = _xh.describe_missing(_miss)
                 except Exception:
                     _guide = ("Copy the missing files from your AIM RaceStudio3 "

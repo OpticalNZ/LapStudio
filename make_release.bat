@@ -73,6 +73,35 @@ if exist "ffmpeg.exe" (
     echo   No ffmpeg.exe here - the exe will look for ffmpeg on the PATH.
 )
 
+REM --- 1b. AiM reader: the DLL, its dependencies and the VC++ 2008 runtime ---
+REM  Without these, .drk / .xrk files cannot be opened. CSV and VBO do not need
+REM  them. The reader runs in a second process; when frozen the exe re-runs
+REM  itself with --xrk-helper (see the top of ecu_overlay_app.py), so the helper
+REM  module must be in the bundle too.
+set AIM_ARG=
+set AIM_NOTE=not bundled - AiM .drk/.xrk files will not open
+set AIM_MISSING=
+for %%D in (MatLabXRK-2022-64-ReleaseU.dll libxml2-2.dll libiconv-2.dll ^
+            libz.dll pthreadVC2_x64.dll msvcr90.dll) do (
+    if exist "%%D" (
+        set AIM_ARG=!AIM_ARG! --add-binary "%%D;."
+    ) else (
+        set AIM_MISSING=!AIM_MISSING! %%D
+    )
+)
+if "!AIM_MISSING!"=="" (
+    echo   AiM reader: all six files found - bundling.
+    set AIM_NOTE=bundled
+) else (
+    echo.
+    echo   AiM reader files missing:!AIM_MISSING!
+    echo   Copy them from your RaceStudio 3 folder if you want .drk support in
+    echo   this release. Building without them - CSV and VBO still work.
+    echo.
+    set AIM_ARG=
+    pause
+)
+
 REM --- 2. Build --------------------------------------------------------------
 python -m pip show pyinstaller >nul 2>&1
 if errorlevel 1 python -m pip install pyinstaller
@@ -87,7 +116,17 @@ python -m PyInstaller ^
   --name LapStudio ^
   --add-data "BigShoulders-Bold.ttf;." ^
   --add-data "Poppins-Bold.ttf;." ^
+  --add-data "xrk_helper.py;." ^
+  --hidden-import xrk_helper ^
+  --hidden-import xrk_reader ^
+  --hidden-import vbo_reader ^
+  --hidden-import lapdata_render ^
+  --hidden-import gtrace_render ^
+  --hidden-import trackmap_render ^
+  --hidden-import dash8_render ^
+  --hidden-import textgrid ^
   %FFMPEG_ARG% ^
+  %AIM_ARG% ^
   --collect-all aggdraw ^
   ecu_overlay_app.py
 
@@ -123,12 +162,15 @@ echo.
 echo ============================================
 echo   DONE
 echo   %OUT%
-echo   ffmpeg: %FFMPEG_NOTE%
+echo   ffmpeg:     %FFMPEG_NOTE%
+echo   AiM reader: %AIM_NOTE%
 echo ============================================
 echo.
 echo Test it before sending: copy the zip to a folder with nothing else in it,
-echo unzip, run LapStudio.exe, load a log and export a short clip. Ideally on a
-echo machine that has never had ffmpeg installed.
+echo unzip, run LapStudio.exe, then
+echo    - load a CSV and export a short clip   ^(checks ffmpeg^)
+echo    - load a .drk and export a short clip  ^(checks the AiM reader^)
+echo Ideally on a machine that has never had ffmpeg or RaceStudio installed.
 echo.
 echo Size note: bundling the SHARED ffmpeg adds about 86 MB to the exe, because
 echo its seven DLLs total 236 MB before compression. A STATIC ffmpeg build is a
