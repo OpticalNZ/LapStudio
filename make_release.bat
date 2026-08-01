@@ -172,6 +172,41 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM --- 2b. Optional code signing --------------------------------------------
+REM  Signing is the only permanent cure for the antivirus false positives: it
+REM  gives the file a verified publisher, and SmartScreen builds reputation
+REM  against the certificate rather than against each new hash.
+REM
+REM  To use it, set these once (System Properties > Environment Variables):
+REM     LAPSTUDIO_CERT   full path to your .pfx
+REM     LAPSTUDIO_CERTPW the password for it
+REM  Without them this step is skipped silently.
+if defined LAPSTUDIO_CERT (
+    where signtool >nul 2>&1
+    if errorlevel 1 (
+        echo   signtool not on PATH - install the Windows SDK to sign builds.
+    ) else (
+        echo.
+        echo Signing...
+        if /i "%MODENAME%"=="folder" (
+            set TOSIGN=dist\LapStudio\LapStudio.exe
+        ) else (
+            set TOSIGN=dist\LapStudio.exe
+        )
+        signtool sign /f "%LAPSTUDIO_CERT%" /p "%LAPSTUDIO_CERTPW%" ^
+                 /tr http://timestamp.digicert.com /td sha256 /fd sha256 ^
+                 /d "LapStudio" "!TOSIGN!"
+        if errorlevel 1 (
+            echo   SIGNING FAILED - shipping unsigned.
+        ) else (
+            echo   signed.
+            set SIGN_NOTE=signed
+        )
+    )
+) else (
+    set SIGN_NOTE=unsigned - expect an antivirus warning on first run
+)
+
 REM --- 3. Package ------------------------------------------------------------
 set OUT=dist\LapStudio %VER%.zip
 if exist "%OUT%" del "%OUT%"
@@ -203,6 +238,7 @@ echo ============================================
 echo   DONE
 echo   %OUT%
 echo   build:      %MODENAME%
+echo   signing:    %SIGN_NOTE%
 echo   ffmpeg:     %FFMPEG_NOTE%
 echo   AiM reader: %AIM_NOTE%
 echo ============================================

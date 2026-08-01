@@ -52,25 +52,27 @@ reports which dependency is missing and what the app can see in the file.
 
 ## "Windows protected your PC" or a virus warning
 
-Windows Defender may report **Win32/Wacapew.C!ml** the first time you run it.
-This is a false positive.
+Windows Defender may report **Trojan:Win32/Wacatac.B!ml** (or Wacapew, or another
+generic name) the first time you run it. This is a false positive.
 
-The `!ml` on the end means it came from a machine-learning guess rather than a
-match against known malware. Three things about a bundled Python app make that
-guess likely: the program carries other executables inside it (ffmpeg and the
-AiM reader), it is not signed with a code-signing certificate, and Microsoft has
-no reputation data for a file this new.
+The `!ml` suffix is the giveaway: it means a machine-learning model guessed,
+rather than the file matching anything known. Checked against 70 engines on
+VirusTotal, LapStudio is flagged by three — Microsoft's ML model and two vendors
+with high false-positive rates — while 67, including Kaspersky, ESET,
+Bitdefender, Sophos, Symantec and Trend Micro, report it clean. No engine names
+an actual threat.
 
-To run it anyway: **More info** then **Run anyway** on the SmartScreen dialog. In
-Defender, open Protection history and choose Allow.
+The cause is packaging, not content. LapStudio is a Python program bundled into
+an executable with PyInstaller, and that bundling produces a loader which is
+unsigned, brand new, and carries other programs inside it (ffmpeg and the AiM
+reader). Defender's model treats that shape as suspicious on its own.
 
-If you would rather satisfy yourself first, upload the file to
-<https://www.virustotal.com/> — a genuine threat is flagged by dozens of engines,
-whereas a packaging false positive is flagged by one or two heuristics.
+To run it: **More info**, then **Run anyway** on the SmartScreen dialog. If
+Defender has already quarantined it, open Protection history and choose Allow.
 
-You can also report it to Microsoft at
-<https://www.microsoft.com/en-us/wdsi/filesubmission> as a software developer;
-they normally clear it within a few days.
+Rather not take our word for it? Upload the exe to <https://www.virustotal.com/>.
+A real threat is flagged by dozens of engines with a named family; a packaging
+false positive looks like the pattern above.
 
 ---
 
