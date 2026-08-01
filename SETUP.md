@@ -50,6 +50,30 @@ reports which dependency is missing and what the app can see in the file.
 
 ---
 
+## "Windows protected your PC" or a virus warning
+
+Windows Defender may report **Win32/Wacapew.C!ml** the first time you run it.
+This is a false positive.
+
+The `!ml` on the end means it came from a machine-learning guess rather than a
+match against known malware. Three things about a bundled Python app make that
+guess likely: the program carries other executables inside it (ffmpeg and the
+AiM reader), it is not signed with a code-signing certificate, and Microsoft has
+no reputation data for a file this new.
+
+To run it anyway: **More info** then **Run anyway** on the SmartScreen dialog. In
+Defender, open Protection history and choose Allow.
+
+If you would rather satisfy yourself first, upload the file to
+<https://www.virustotal.com/> — a genuine threat is flagged by dozens of engines,
+whereas a packaging false positive is flagged by one or two heuristics.
+
+You can also report it to Microsoft at
+<https://www.microsoft.com/en-us/wdsi/filesubmission> as a software developer;
+they normally clear it within a few days.
+
+---
+
 ## First render
 
 1. **Data** tab — load your log. Channels are detected automatically; correct any

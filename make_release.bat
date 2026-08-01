@@ -8,8 +8,14 @@ REM    2. checks whether ffmpeg.exe is a STATIC build, because only a static one
 REM       works when bundled - a shared build needs ~250 MB of av*.dll beside it
 REM    3. zips the result into  dist\LapStudio <version>.zip
 REM
-REM  Usage:   make_release.bat 1.2.0
+REM  Usage:   make_release.bat 1.2.0            -> folder build (recommended)
+REM           make_release.bat 1.2.0 onefile    -> single .exe
 REM           (if you leave the version off it uses the date)
+REM
+REM  Why a folder by default: a --onefile exe unpacks ~250 MB to %TEMP% on every
+REM  launch and runs code from there, which is the behaviour Windows Defender
+REM  flags as Win32/Wacapew.C!ml. A folder build does none of that, is far less
+REM  likely to be flagged, and starts much faster.
 REM ===========================================================================
 
 setlocal EnableDelayedExpansion
@@ -18,6 +24,15 @@ cd /d "%~dp0"
 set VER=%~1
 if "%VER%"=="" (
     for /f %%d in ('powershell -NoProfile -Command "Get-Date -Format yyyy.MM.dd"') do set VER=%%d
+)
+
+set MODE=--onedir
+set MODENAME=folder
+if /i "%~2"=="onefile" (
+    set MODE=--onefile
+    set MODENAME=single exe
+    echo   NOTE: onefile builds are the ones Defender flags. Use the folder build
+    echo         unless you have a specific reason not to.
 )
 
 echo.
@@ -117,10 +132,16 @@ REM  found by the import scan, but they are pinned so a refactor cannot quietly
 REM  drop one from the bundle.
 REM  aim_reader is an optional import that does not exist; excluding it keeps the
 REM  build log clean.
+REM  --noupx: UPX-compressed binaries are heavily flagged by antivirus, and
+REM  PyInstaller will use UPX automatically if it finds it on the PATH.
+REM  --version-file: gives the exe a publisher and product name instead of no
+REM  metadata at all, which anonymous binaries are penalised for.
 python -m PyInstaller ^
-  --onefile ^
+  %MODE% ^
   --windowed ^
   --noconfirm ^
+  --noupx ^
+  --version-file version_info.txt ^
   --name LapStudio ^
   --add-data "BigShoulders-Bold.ttf;." ^
   --add-data "Poppins-Bold.ttf;." ^
@@ -158,12 +179,17 @@ if exist "%OUT%" del "%OUT%"
 echo.
 echo Packaging "%OUT%" ...
 
-REM  Only the exe and the setup notes. A loose shared ffmpeg.exe is useless
-REM  without its DLLs, so it is never shipped on its own.
-set FILES='dist\LapStudio.exe','SETUP.md'
-
-powershell -NoProfile -Command ^
-  "Compress-Archive -Path %FILES% -DestinationPath '%OUT%' -Force"
+REM  A folder build produces dist\LapStudio\ ; a onefile build a single exe.
+REM  Either way the setup notes travel with it. A loose shared ffmpeg.exe is
+REM  useless without its DLLs, so it is never shipped on its own.
+if /i "%MODENAME%"=="folder" (
+    copy /y "SETUP.md" "dist\LapStudio\SETUP.md" >nul
+    powershell -NoProfile -Command ^
+      "Compress-Archive -Path 'dist\LapStudio' -DestinationPath '%OUT%' -Force"
+) else (
+    powershell -NoProfile -Command ^
+      "Compress-Archive -Path 'dist\LapStudio.exe','SETUP.md' -DestinationPath '%OUT%' -Force"
+)
 
 if errorlevel 1 (
     echo.
@@ -176,6 +202,7 @@ echo.
 echo ============================================
 echo   DONE
 echo   %OUT%
+echo   build:      %MODENAME%
 echo   ffmpeg:     %FFMPEG_NOTE%
 echo   AiM reader: %AIM_NOTE%
 echo ============================================
@@ -185,6 +212,13 @@ echo unzip, run LapStudio.exe, then
 echo    - load a CSV and export a short clip   ^(checks ffmpeg^)
 echo    - load a .drk and export a short clip  ^(checks the AiM reader^)
 echo Ideally on a machine that has never had ffmpeg or RaceStudio installed.
+echo.
+echo If Windows Defender flags the result as Win32/Wacapew.C!ml, that is a false
+echo positive: the !ml suffix means a machine-learning guess, not a signature
+echo match. Report it once at
+echo   https://www.microsoft.com/en-us/wdsi/filesubmission
+echo choosing "Software developer" - they usually clear it within a few days.
+echo A code-signing certificate is the only permanent fix.
 echo.
 echo Size note: bundling the SHARED ffmpeg adds about 86 MB to the exe, because
 echo its seven DLLs total 236 MB before compression. A STATIC ffmpeg build is a
