@@ -1,0 +1,73 @@
+# ── Build artefacts ─────────────────────────────────────────────────────────
+build/
+dist/
+*.spec.bak
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ── Working backups and scratch ─────────────────────────────────────────────
+*.bak
+*.bak_*
+_backup_root_*/
+ui_prefs.json
+geometry.json
+panel_geometry.json
+pill_clean.npy
+
+# ── Telemetry logs: never commit. These are session data, often belonging to
+#    other drivers/teams, and some are large. Keep them out of the repo.
+*.csv
+*.vbo
+*.drk
+*.xrk
+*.xrz
+*.dat
+*.gpk
+*.rrk
+
+# ── Video and rendered output ───────────────────────────────────────────────
+*.mp4
+*.mov
+*.avi
+*.sfk
+preview_*.png
+_tm.png
+dash*_*.png
+lap*_*.png
+tm*_*.png
+crop_*.png
+jit_*.png
+
+# ── Third-party binaries. Not ours to redistribute; users install these
+#    themselves (see the README).
+#    ffmpeg (GPL/LGPL, ~250 MB), the AiM XRK library, and MSVC runtimes.
+bin/
+ffmpeg.exe
+ffplay.exe
+ffprobe.exe
+av*.dll
+sw*.dll
+postproc*.dll
+MatLabXRK*.dll
+libxml2*.dll
+libiconv*.dll
+libz.dll
+msvcr*.dll
+pthreadVC*.dll
+
+# ── Not part of this project ───────────────────────────────────────────────
+# Firm/work documents that have found their way into the folder. Never publish.
+IS-manual-*.md
+py lines.txt
+.ecu_theme
+
+# Distribution zips are rebuilt on demand, not versioned.
+LapStudio-*.zip
+
+# ── Editor / OS noise ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

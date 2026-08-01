@@ -1,6 +1,7 @@
 """Dash 8 standalone renderer — builds background + composites live data."""
 from PIL import Image, ImageDraw, ImageFont
 import math
+from textgrid import _gtext, _gwidth, _vmask, _vw
 
 W,H = 1920,850
 GCX,GCY,GR = 500,504,480
@@ -23,19 +24,85 @@ def _find_bsb():
     return None
 BSB = _find_bsb()
 
+_FCACHE = {}
+_SCRATCH_D = None
+
+
+def _f(size):
+    """Cached font (building one per call cost ~18 constructions per frame)."""
+    size = int(size)
+    f = _FCACHE.get(size)
+    if f is None:
+        f = ImageFont.truetype(BSB, size)
+        _FCACHE[size] = f
+    return f
+
+
+def _scratch():
+    global _SCRATCH_D
+    if _SCRATCH_D is None:
+        _SCRATCH_D = ImageDraw.Draw(Image.new("RGBA", (4, 4)))
+    return _SCRATCH_D
+
+
+try:
+    import inspect as _insp
+    _HAS_STROKE = 'stroke_width' in _insp.signature(ImageDraw.ImageDraw.text).parameters
+except Exception:
+    _HAS_STROKE = False
+
+
 def clamp(v): return max(0,min(255,int(v)))
 def lerp(a,b,t): return tuple(clamp(a[i]*(1-t)+b[i]*t) for i in range(3))
 
-def wide_text(img,pos,txt,size,fill,ow=4,outline=(0,0,0),stretch=1.5,anchor="mm"):
-    fnt=ImageFont.truetype(BSB,size)
-    tmp=Image.new("RGBA",(10,10)); td=ImageDraw.Draw(tmp)
-    bb=td.textbbox((0,0),txt,font=fnt); tw=bb[2]-bb[0]; th=bb[3]-bb[1]; pad=ow+4
-    layer=Image.new("RGBA",(tw+2*pad,th+2*pad),(0,0,0,0)); ld=ImageDraw.Draw(layer)
-    for dx in range(-ow,ow+1):
-        for dy in range(-ow,ow+1):
-            if dx*dx+dy*dy<=ow*ow: ld.text((pad-bb[0]+dx,pad-bb[1]+dy),txt,font=fnt,fill=outline)
-    ld.text((pad-bb[0],pad-bb[1]),txt,font=fnt,fill=fill)
-    layer=layer.resize((int(layer.width*stretch),layer.height),Image.LANCZOS)
+_LAYER_CACHE = {}
+_LAYER_ORDER = []
+_LAYER_MAX = 400
+
+
+def _wide_layer(txt,size,fill,ow,outline,stretch,slots,halign="m"):
+    """Cached stretched-text layer.
+
+    Every label ("LAP", "km/h", "TPS") is otherwise re-rendered on every frame,
+    and values repeat constantly, so a small bounded cache removes most of the
+    text cost. Keyed on everything that affects the pixels.
+    """
+    key=(txt,int(size),tuple(fill) if isinstance(fill,(tuple,list)) else fill,
+         int(ow),tuple(outline) if isinstance(outline,(tuple,list)) else outline,
+         round(float(stretch),3),str(slots),halign)
+    lay=_LAYER_CACHE.get(key)
+    if lay is not None:
+        return lay
+    fnt=_f(size)
+    td=_scratch()
+    ref=str(slots) if slots else _vmask(txt)
+    pad=ow+4
+    res_w=int(round(max(_gwidth(ref,fnt), _gwidth(txt,fnt))))
+    vb=td.textbbox((0,0),ref,font=fnt); th=vb[3]-vb[1]
+    lay=Image.new("RGBA",(res_w+2*pad,th+2*pad),(0,0,0,0))
+    # Align the value inside the reserved field the same way the field itself is
+    # placed. Previously this always left-aligned, so a 4-digit value inside a
+    # 5-digit field sat off to one side of a centred readout - the number looked
+    # centred on "the widest it could ever be" rather than on its own digits.
+    _ox = pad + (res_w / 2.0 if halign == "m" else res_w if halign == "r" else 0)
+    _gtext(ImageDraw.Draw(lay),(_ox,pad),txt,fnt,fill,anchor=halign+"t",
+           outline=outline,ow=int(ow),vref=ref,slots=ref)
+    lay=lay.resize((max(1,int(lay.width*stretch)),lay.height),Image.LANCZOS)
+    _LAYER_CACHE[key]=lay
+    _LAYER_ORDER.append(key)
+    if len(_LAYER_ORDER) > _LAYER_MAX:
+        _LAYER_CACHE.pop(_LAYER_ORDER.pop(0), None)
+    return lay
+
+
+def wide_text(img,pos,txt,size,fill,ow=4,outline=(0,0,0),stretch=1.5,anchor="mm",
+              slots=None):
+    """Stretched outlined text. The layer is reserved at the width of the value's
+    digit mask (or `slots`) and digits sit on a fixed pitch, so the paste
+    position - and every digit - stays put as the value changes."""
+    layer=_wide_layer(txt,size,fill,ow,outline,stretch,slots,
+                      (anchor or "mm")[0])
+    pad=ow+4
     pad_s=int(pad*stretch)   # padding width after horizontal stretch
     x,y=pos
     if anchor=="mm": ox,oy=x-layer.width/2,y-layer.height/2
@@ -45,16 +112,15 @@ def wide_text(img,pos,txt,size,fill,ow=4,outline=(0,0,0),stretch=1.5,anchor="mm"
     img.paste(layer,(int(ox),int(oy)),layer)
     return layer.width
 
-def wide_text_width(txt,size,ow=4,stretch=1.5):
+def wide_text_width(txt,size,ow=4,stretch=1.5,slots=None):
     """Measure the rendered width wide_text would produce."""
-    fnt=ImageFont.truetype(BSB,size)
-    tmp=Image.new("RGBA",(10,10)); td=ImageDraw.Draw(tmp)
-    bb=td.textbbox((0,0),txt,font=fnt); tw=bb[2]-bb[0]; pad=ow+4
+    fnt=_f(size)
+    ref=str(slots) if slots else _vmask(txt)
+    tw=max(_gwidth(ref,fnt), _gwidth(txt,fnt)); pad=ow+4
     return int((tw+2*pad)*stretch)
 
-def norm_text(img_d,pos,txt,size,fill,anchor="mm"):
-    f=ImageFont.truetype(BSB,size)
-    img_d.text(pos,txt,font=f,fill=fill,anchor=anchor)
+def norm_text(img_d,pos,txt,size,fill,anchor="mm",slots=None):
+    _gtext(img_d,pos,txt,_f(size),fill,anchor=anchor,slots=slots)
 
 
 def speed_colour_fn(spd, min_spd=50.0, max_spd=200.0):
@@ -155,9 +221,31 @@ def render_frame(rpm=5500,speed=195,gear=4,lap=12,timer_str="2:03.24",
                  trace_speed=None,speed_colour=True,bg=None,
                  chanA=None,chanA_label="",chanB=None,chanB_label="",
                  chanA_unit="",chanB_unit="",
-                 bars_inside=False):
+                 bars_inside=False,ring_colour=None):
     if bg is None: bg=Image.open('/mnt/user-data/outputs/dash8_synth_bg.png').convert('RGB')
     img=bg.copy(); d=ImageDraw.Draw(img)
+
+    # ── RPM status ring ────────────────────────────────────────────────────────
+    # The band just inside the tick numbers is grey in the cached background; it
+    # is repainted here in the rpm stage colour (green / yellow / orange / red,
+    # see renderer_pil.rpm_stage_colour) so the whole dial reads as a shift light.
+    # Drawn as arc segments so the background's shading is preserved rather than
+    # flattened - 28 arcs per frame is far cheaper than a per-pixel pass.
+    if ring_colour:
+        _r_out = R_BLACK_IN
+        _r_in = R_GREY2_IN
+        _rw = max(2, _r_out - _r_in)
+        _bb = [GCX - _r_out, GCY - _r_out, GCX + _r_out, GCY + _r_out]
+        _segs = 28
+        for _s in range(_segs):
+            _a0 = 360.0 * _s / _segs
+            _a1 = 360.0 * (_s + 1) / _segs
+            # PIL angles run clockwise from 3 o'clock; the background shading uses
+            # maths angles, so mirror to match its 105 + 25*sin(ang + 0.6) profile.
+            _mid = math.radians(-(_a0 + _a1) / 2.0)
+            _shade = (105.0 + 25.0 * math.sin(_mid + 0.6)) / 118.0
+            _col = tuple(clamp(c * _shade) for c in ring_colour)
+            d.arc(_bb, _a0, _a1, fill=_col, width=_rw)
 
     # ── Shield (convex top, sloped sides) ──────────────────────────────────────
     sh_top_y=GCY-R_BLACK_IN+int(GR*.005); sh_bot_y=GCY-int(GR*.14)
@@ -187,21 +275,21 @@ def render_frame(rpm=5500,speed=195,gear=4,lap=12,timer_str="2:03.24",
 
     # ── RPM stack — computed positions so nothing overlaps ──────────────────────
     def text_h(txt,size):
-        f=ImageFont.truetype(BSB,size); bb=d.textbbox((0,0),txt,font=f); return bb[3]-bb[1]
+        # measure the digit MASK: the stack height must not change with the value
+        f=_f(size); bb=d.textbbox((0,0),_vmask(txt),font=f); return bb[3]-bb[1]
 
     # RPM number (slightly smaller to leave room for bigger peak)
     rpm_fsz=max(54,int(GR*.23))
     while rpm_fsz>20:
-        f=ImageFont.truetype(BSB,rpm_fsz)
-        bb=d.textbbox((0,0),str(int(rpm)),font=f)
-        if (bb[2]-bb[0])*1.5 < R_FACE*1.75: break
+        f=_f(rpm_fsz)
+        if _vw("88888",f)*1.5 < R_FACE*1.75: break
         rpm_fsz-=2
     # Peak rpm — DOUBLED (was .40, now .80 of rpm size)
     peak_fsz=max(34,int(rpm_fsz*.80))
     peak_str=f"({int(peak_rpm)})"
 
-    rpm_h=text_h(str(int(rpm)),rpm_fsz)
-    peak_h=text_h(peak_str,peak_fsz)
+    rpm_h=text_h("88888",rpm_fsz)
+    peak_h=text_h("(88888)",peak_fsz)
     gap=int(GR*.018)
 
     # Stack centred around GCY-0.05*GR: rpm on top, peak below, then divider
@@ -211,20 +299,22 @@ def render_frame(rpm=5500,speed=195,gear=4,lap=12,timer_str="2:03.24",
     div_y=peak_cy+peak_h//2+int(GR*.04)
     dl=int(GR*.30)
 
-    wide_text(img,(GCX,rpm_cy),str(int(rpm)),rpm_fsz,WHITE,ow=6,stretch=1.5)
-    wide_text(img,(GCX,peak_cy),peak_str,peak_fsz,CYAN,ow=3,stretch=1.4)
+    wide_text(img,(GCX,rpm_cy),str(int(rpm)),rpm_fsz,WHITE,ow=6,stretch=1.5,
+              slots="88888")
+    wide_text(img,(GCX,peak_cy),peak_str,peak_fsz,CYAN,ow=3,stretch=1.4,
+              slots="(88888)")
     d.line([GCX-dl,div_y,GCX+dl,div_y],fill=(215,220,225),width=max(6,int(GR*.016)))
 
     # ── Speed — moved DOWN, more room ───────────────────────────────────────────
     spd_fsz=max(54,int(GR*.24))
     while spd_fsz>20:
-        f=ImageFont.truetype(BSB,spd_fsz)
-        bb=d.textbbox((0,0),str(int(speed)),font=f)
-        if (bb[2]-bb[0])*1.5 < R_FACE*1.5: break
+        f=_f(spd_fsz)
+        if _vw("888",f)*1.5 < R_FACE*1.5: break
         spd_fsz-=2
-    spd_h=text_h(str(int(speed)),spd_fsz)
+    spd_h=text_h("888",spd_fsz)
     spd_cy=div_y+int(GR*.05)+spd_h//2
-    wide_text(img,(GCX,spd_cy),str(int(speed)),spd_fsz,WHITE,ow=6,stretch=1.5)
+    wide_text(img,(GCX,spd_cy),str(int(speed)),spd_fsz,WHITE,ow=6,stretch=1.5,
+              slots="888")
     wide_text(img,(GCX,spd_cy+spd_h//2+int(GR*.04)),"km/h",max(20,int(spd_fsz*.30)),(210,230,248),ow=2,stretch=1.4)
 
     # ── Needle in black ring ─────────────────────────────────────────────────────
@@ -308,7 +398,7 @@ def render_frame(rpm=5500,speed=195,gear=4,lap=12,timer_str="2:03.24",
         # BELOW the throttle/brake bars further down (see after the bars block),
         # so they don't collide with the bars. G-trace removed (standalone now).
         lap_y=int(H*0.13)
-        wide_text(img,(info_x,lap_y),str(lap),int(H*.14),WHITE,ow=4,stretch=1.5,anchor="lm")
+        wide_text(img,(info_x,lap_y),str(lap),int(H*.14),WHITE,ow=4,stretch=1.5,anchor="lm",slots="88")
         wide_text(img,(info_x,lap_y+int(H*.11)),"LAP",int(H*.045),CYAN,ow=2,stretch=1.5,anchor="lm")
         lt_y=int(H*0.36)
         wide_text(img,(info_x,lt_y),timer_str,int(H*.085),WHITE,ow=4,stretch=1.35,anchor="lm")
@@ -333,7 +423,7 @@ def render_frame(rpm=5500,speed=195,gear=4,lap=12,timer_str="2:03.24",
             d.rectangle([bx,_bar_bot-fh,bx+_bw_v,_bar_bot],fill=fillcol)
             # label above the bar, percentage below
             wide_text(img,(GCX+cx_off,_bar_top-int(H*.030)),label,int(H*.032),WHITE,ow=3,stretch=1.4,anchor="mm")
-            wide_text(img,(GCX+cx_off,_bar_bot+int(H*.030)),f"{int(pct)}%",int(H*.036),WHITE,ow=3,stretch=1.4,anchor="mm")
+            wide_text(img,(GCX+cx_off,_bar_bot+int(H*.030)),f"{int(pct)}%",int(H*.036),WHITE,ow=3,stretch=1.4,anchor="mm",slots="888%")
         vbar(-_bx_off, throttle, (230,230,235), "THR")   # left = throttle (white)
         vbar(+_bx_off, brake,    RED,           "BRK")   # right = brake (red)
     else:
@@ -346,7 +436,7 @@ def render_frame(rpm=5500,speed=195,gear=4,lap=12,timer_str="2:03.24",
             fw=int(bar_w*max(0,min(100,pct))/100)
             d.rectangle([bar_x,y,bar_x+fw,y+bar_h],fill=fillcol)
             wide_text(img,(bar_x,y-int(H*.030)),label,int(H*.042),WHITE,ow=3,stretch=1.5,anchor="lm")
-            wide_text(img,(bar_x+bar_w+int(GR*.03),y+bar_h//2),f"{int(pct)}%",int(H*.046),WHITE,ow=3,stretch=1.5,anchor="lm")
+            wide_text(img,(bar_x+bar_w+int(GR*.03),y+bar_h//2),f"{int(pct)}%",int(H*.046),WHITE,ow=3,stretch=1.5,anchor="lm",slots="888%")
         hbar(bar_y0,"THROTTLE",throttle,(230,230,235))
         hbar(bar_y0+int(H*.14),"BRAKE",brake,RED)
 

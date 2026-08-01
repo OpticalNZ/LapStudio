@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>LapStudio — proposed render panel</title>
+<style>
+  body{font-family:Segoe UI,Arial,sans-serif;background:#1e1f24;color:#e8e8ec;margin:0;padding:24px;}
+  h1{font-size:20px;font-weight:600;margin:0 0 4px;}
+  .sub{color:#9a9aa2;font-size:13px;margin:0 0 20px;}
+  .band{background:#26272e;border-radius:12px;padding:16px 18px;margin-bottom:14px;}
+  .band .lbl{font-size:12px;color:#9a9aa2;text-transform:uppercase;letter-spacing:.5px;margin:0 0 10px;}
+  .row{display:flex;gap:16px;align-items:center;flex-wrap:wrap;}
+  .field{display:flex;align-items:center;gap:8px;}
+  .field span{font-size:14px;color:#b6b6bd;}
+  select{background:#33343c;color:#e8e8ec;border:1px solid #44454e;border-radius:6px;padding:6px 8px;font-size:14px;}
+  .hint{font-size:12px;color:#77777f;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;}
+  .card{background:#2c2d35;border:1px solid #3a3b44;border-radius:12px;padding:14px 16px;}
+  .card.off{opacity:.5;}
+  .chead{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+  .ctitle{font-weight:600;font-size:15px;display:flex;align-items:center;gap:8px;}
+  .dot{width:10px;height:10px;border-radius:50%;background:#4a9eff;}
+  .stack{display:flex;flex-direction:column;gap:10px;}
+  .frow{display:flex;align-items:center;gap:8px;}
+  .frow>span:first-child{font-size:13px;color:#b6b6bd;min-width:64px;}
+  .note{font-size:12px;color:#77777f;margin:0;}
+  .cta{margin-top:16px;display:flex;gap:10px;align-items:center;}
+  button{background:#3a3b44;color:#e8e8ec;border:1px solid #55565f;border-radius:6px;padding:8px 14px;font-size:14px;cursor:pointer;}
+  .files{font-size:13px;color:#77777f;}
+  .keypoint{background:#2a2d38;border-left:3px solid #4a9eff;padding:10px 14px;border-radius:0 8px 8px 0;font-size:13px;color:#c6c6cd;margin:0 0 18px;}
+</style></head>
+<body>
+<h1>LapStudio — proposed render panel</h1>
+<p class="sub">Mockup for review. Nothing wired yet — this is to agree the layout and options.</p>
+
+<div class="keypoint">Each enabled layer renders as its <b>own separate 1080p video file</b>, chroma-keyed, for compositing in your video editor. The G-trace and lap trace are no longer baked into a dash — they are independent layers.</div>
+
+<div class="band">
+  <p class="lbl">Output frame</p>
+  <div class="row">
+    <div class="field"><span>Resolution</span><select><option>1920 × 1080 (1080p)</option></select></div>
+    <div class="field"><span>Chroma</span><select><option>Magenta</option><option>Green</option></select></div>
+    <span class="hint">Each graphic is sized to fill its share of the 1080p frame → thicker edges survive keying.</span>
+  </div>
+</div>
+
+<div class="grid">
+
+  <div class="card">
+    <div class="chead"><span class="ctitle"><span class="dot"></span>Dash</span><input type="checkbox" checked></div>
+    <div class="stack">
+      <div class="frow"><span>Style</span>
+        <select>
+          <option>Dash 10 (Arc)</option><option>Dash 7 (HUD)</option><option>Dash 9 (Triple)</option>
+          <option>Dash 1 (white gauge)</option><option>Dash 2 (black gauge)</option><option>… all existing</option>
+        </select></div>
+      <p class="note">The main dash graphic. After this change, its built-in G-trace is removed — use the G-trace layer instead.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="chead"><span class="ctitle"><span class="dot"></span>G-trace</span><input type="checkbox" checked></div>
+    <div class="stack">
+      <div class="frow"><span>Form</span>
+        <select>
+          <option>Crosshair target (from Dash 10)</option>
+          <option>Classic rings + Lat/Long readout</option>
+          <option>Minimal dot + rings</option>
+        </select></div>
+      <div class="frow"><span>G rings</span>
+        <select><option>Auto from log (round up to next 0.5G)</option><option>Fixed 1.0 / 2.0G</option></select></div>
+      <div class="frow"><span>Trail</span>
+        <select><option>Speed colour</option><option>Black &amp; white</option><option>Link to channel…</option></select></div>
+      <p class="note">"Auto from log" scans the whole session's max G and sizes the outer ring to the nearest greater 0.5G.</p>
+    </div>
+  </div>
+
+  <div class="card off">
+    <div class="chead"><span class="ctitle"><span class="dot" style="background:#777;"></span>Lap trace (track map)</span><input type="checkbox"></div>
+    <div class="stack">
+      <div class="frow"><span>Colour</span>
+        <select><option>Speed colour</option><option>Black &amp; white</option><option>Link to channel…</option></select></div>
+      <div class="frow"><span>Channel</span>
+        <select><option>(when "link to channel") water temp</option><option>throttle</option><option>brake</option><option>rpm</option></select></div>
+      <div class="frow"><span>Marker</span>
+        <select><option>Position dot</option><option>None</option></select></div>
+      <p class="note">Renders the full lap outline; colour mode mirrors the G-trace trail options.</p>
+    </div>
+  </div>
+
+</div>
+
+<div class="cta">
+  <button>▶ Render enabled layers</button>
+  <span class="files">→ produces: dash.mp4 + gtrace.mp4  (lap trace off in this example)</span>
+</div>
+
+</body></html>
