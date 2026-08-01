@@ -10,8 +10,9 @@ Format details:
   - [data]: space-separated values
 
   Coordinate encoding: decimal minutes (MMMM.MMMMM)
-    lat_deg = raw_lat / 60.0          (negative = south)
-    lon_deg = abs(raw_lon) / 60.0     (VBO uses negative for east NZ too)
+    lat_deg = raw_lat / 60.0          (north positive, south negative)
+    lon_deg = -raw_lon / 60.0         (VBO stores WEST positive; negate to get
+                                       standard east-positive / west-negative)
 
   Time encoding: HHMMSS.mmm
     elapsed = HH*3600 + MM*60 + SS.mmm  (seconds since midnight UTC)
@@ -39,8 +40,16 @@ def _dec_minutes_lat(raw):
 
 
 def _dec_minutes_lon(raw):
-    """Decimal-minutes lon → decimal degrees (positive = east)."""
-    return abs(float(raw)) / 60.0
+    """Decimal-minutes lon → decimal degrees (East positive, West negative).
+
+    Racelogic/VBO stores longitude in minutes with WEST POSITIVE (the opposite
+    of the usual sign), so negating gives standard signed degrees:
+      - NZ (east)  raw -10504.6  → +175.08   (east, positive)
+      - USA (west) raw +6302.25  → -105.04   (west, negative)
+    The previous abs() lost the sign and put western tracks in the eastern
+    hemisphere (~18,000 km off).
+    """
+    return -float(raw) / 60.0
 
 
 def read_vbo(filepath, progress_cb=None):
@@ -154,6 +163,12 @@ def read_vbo(filepath, progress_cb=None):
     for lap_n, start_ut, end_ut, lt_s in laps_raw:
         st = start_ut - t0_s
         et = end_ut   - t0_s
+        # Skip laps that end at or before the logged data starts. These are the
+        # staging / pre-run entries (common on point-to-point events such as a
+        # hillclimb, where the "lap 0" is positioning before the timed run).
+        if et <= 0:
+            continue
+        st = max(0.0, st)          # clamp a lap that straddles the data start
         laps.append((st, et, lt_s))
     meta['laps'] = laps
 
@@ -179,20 +194,74 @@ def read_vbo(filepath, progress_cb=None):
     df['g_lat']  = pd.to_numeric(raw_df[lat_g_col], errors='coerce').fillna(0) if lat_g_col else 0.0
 
     # Heading, height, distance
+    _hhd_cols = []
     for dest, keywords in [('heading', ['heading']), ('height', ['height']), ('distance', ['distance'])]:
         col = next((c for c in col_names if any(k in c.lower() for k in keywords)), None)
         df[dest] = pd.to_numeric(raw_df[col], errors='coerce').fillna(0) if col else 0.0
+        if col:
+            _hhd_cols.append(col)
 
-    # Placeholders for channels not in VBO
-    df['rpm']      = 0.0
-    df['throttle'] = 0.0
-    df['brake']    = 0.0
-    df['gear']     = 0
+    # ── Engine channels ───────────────────────────────────────────────────────
+    # Newer VBOs (e.g. vRacer with an ECU link) log real rpm / throttle / brake /
+    # gear. Map those when present; only fall back to placeholders / G-derived
+    # values when the columns are absent (older GPS-only VBOs).
+    rpm_col  = next((c for c in col_names if 'rpm' in c.lower()), None)
+    thr_col  = next((c for c in col_names if 'throttle' in c.lower()), None)
+    brk_col  = next((c for c in col_names if 'brake' in c.lower()), None)
+    gear_col = next((c for c in col_names if c.lower() == 'gear'), None)
 
-    # Derived: infer throttle/brake from longitudinal G
-    if 'g_long' in df.columns:
+    df['rpm'] = (pd.to_numeric(raw_df[rpm_col], errors='coerce').fillna(0)
+                 if rpm_col else 0.0)
+
+    if thr_col:
+        # Throttle position is already a 0-100 percentage in the VBO.
+        df['throttle'] = pd.to_numeric(raw_df[thr_col], errors='coerce').fillna(0).clip(0, 100)
+    else:
+        # Fallback: infer opening from longitudinal G (crude proxy).
         df['throttle'] = np.clip(df['g_long'] * 100, 0, 100)
-        df['brake']    = np.clip(-df['g_long'] * 100, 0, 100)
+
+    if brk_col:
+        df['brake'] = pd.to_numeric(raw_df[brk_col], errors='coerce').fillna(0).clip(0, 100)
+    else:
+        df['brake'] = np.clip(-df['g_long'] * 100, 0, 100)
+
+    if gear_col:
+        df['gear'] = pd.to_numeric(raw_df[gear_col], errors='coerce').fillna(0).round().astype(int)
+    else:
+        df['gear'] = 0
+
+    # Record which real engine channels were found (handy for the UI / status).
+    meta['engine_channels'] = {
+        'rpm': bool(rpm_col), 'throttle': bool(thr_col),
+        'brake': bool(brk_col), 'gear': bool(gear_col),
+    }
+
+    # ── Expose EVERY remaining log channel for mapping ────────────────────────
+    # Any column not already consumed by a core channel is added under a
+    # readable name (from the [header] section when available), so it can be
+    # selected as Channel A / B or remapped in the UI. This keeps the full log
+    # available (manifold pressure, vertical G, combined G, lean angle, rotation
+    # rates, satellites, etc.), which is especially useful for A/B comparison.
+    header_names = [l for l in sections.get('header', []) if l]
+    _use_header = (len(header_names) == len(col_names))
+    consumed = {c for c in (time_col, lat_col, lon_col, spd_col, long_col,
+                            lat_g_col, rpm_col, thr_col, brk_col, gear_col,
+                            *_hhd_cols) if c}
+    for _i, _tok in enumerate(col_names):
+        if _tok in consumed:
+            continue
+        _name = header_names[_i].strip() if _use_header else _tok
+        if not _name or _name in df.columns:
+            _name = _tok
+        if _name in df.columns:
+            continue
+        _vals = pd.to_numeric(raw_df[_tok], errors='coerce')
+        if _vals.notna().any():          # keep numeric channels only
+            df[_name] = _vals.fillna(0)
+    meta['extra_channels'] = [c for c in df.columns
+                              if c not in ('ts', 'lat', 'lon', 'speed', 'g_long',
+                                           'g_lat', 'heading', 'height', 'distance',
+                                           'rpm', 'throttle', 'brake', 'gear')]
 
     df.reset_index(drop=True, inplace=True)
 

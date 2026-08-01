@@ -1,106 +1,160 @@
-# LapStudio — ECU Telemetry Video Overlay
+# LapStudio — motorsport telemetry video overlays
 
-LapStudio turns ECU / data-logger CSV (and optional VBO / AiM) logs into
-broadcast-style telemetry dashboards rendered as transparent **chroma-key**
-video overlays you can drop onto track footage.
+LapStudio turns a datalog into broadcast-style telemetry overlays, rendered as
+chroma-key video you can drop straight onto track footage in any editor.
 
-A desktop GUI (tkinter) lets you map your log's columns to channels, pick a
-dashboard style, set lap timing, and export an overlay video.
+A desktop app (tkinter) maps your log's columns to channels, previews each
+overlay live as you change settings, and exports the finished videos.
 
-## Dashboard styles
+Reads **CSV**, **VBO** (RaceLogic and compatible) and **AiM `.drk` / `.xrk`**
+logs.
+
+---
+
+## What it produces
+
+**The dashboard** — one of fourteen styles, rendered at 1920×750 (or wider where
+the layout needs it):
 
 | Style | Description |
 |-------|-------------|
-| Dash 1 (white gauge) | Analog-style circular gauge, light face, Poppins data font |
-| Dash 2 (black gauge) | Analog-style circular gauge, dark face, Poppins data font |
-| Dash 3 | Race dash: RPM bar graph + data row |
-| Dash 4 | Coloured data-box grid (full-height strip, compact panels) |
-| Dash 5 | Top RPM bar + columns + large gear (keeps its internal G-trace) |
-| Dash 6 (Logger) | Two data columns + multi-channel trace plot |
-| Dash 6b (Wide Logger) | Full-width trace plot + bottom panel row |
-| Dash 8 / Dash 8 (Chroma) | Modern circular telemetry gauge; channels below the bars |
-| Dash 8b (bars inside) / (…, Chroma) | Bars inside the gauge; 2×2 parallelogram data panels |
-| Vertical / Horizontal Text | Minimal text-only readouts |
+| Dash 1 · Round gauge, light | Analogue circular gauge, light face |
+| Dash 2 · Round gauge, dark | The same gauge on a dark face |
+| Dash 3 · Full panel | Solid panel filling the frame: rpm bar over a data row |
+| Dash 4 · Data strip | Coloured data boxes in a compact strip |
+| Dash 5 · Gear centre | Rpm bars above, lap column left, large gear centre, G-plot right |
+| Dash 6 · Logger | Two data columns beside multi-channel trace plots |
+| Dash 6b · Logger, wide | Full-width trace plot over a single panel row |
+| Dash 7 · HUD strip | Wide heads-up strip |
+| Dash 8 · Circular gauge | Modern circular telemetry gauge with a shift-light ring |
+| Dash 8b · Circular gauge, bars inside | The same with throttle/brake inside and slanted data panels |
+| Dash 9 · Triple gauge | Three round gauges plus a data strip |
+| Dash 10 · Twin arcs | Mirrored rpm arcs meeting at the centre |
+| Text · Vertical columns | Minimal text-only readout, stacked |
+| Text · Horizontal rows | Minimal text-only readout, in a row |
 
-Most styles render against a magenta (`255,0,255`) chroma background for easy
-keying in any video editor.
+**Three optional widgets**, each rendered as its own video so you can place them
+independently:
 
-**G-force trace:** the embedded G-trace plot was removed from Dash 4 and Dash 8/8b
-(Dash 5 keeps its internal one; Dash 6 never had one). The G-force trace is now a
-**separate overlay video** — see below.
+- **Track map** — the circuit from GPS, coloured by speed, with a moving car dot.
+  Either the whole lap, or a window of track that scrolls past a fixed dot.
+- **G-force trace** — a G-G plot as a crosshair target or an X-Y graph, with a
+  speed-coloured trail and live readouts.
+- **Lap data** — the current lap and time, or the full lap list with the current
+  lap highlighted and the best in gold, in any of seven graphic styles.
 
-## Optional channels (A & B)
+Most overlays render on a magenta (`255,0,255`) or green chroma field. Some
+styles fill their frame opaquely, or can be cropped to their panel, and then need
+no keying at all — the app hides the backdrop option when it does not apply.
 
-Beyond the standard channels (RPM, speed, gear, throttle, brake, lat/long G), you
-can map **two extra channels** (e.g. oil pressure, coolant temp). In the app's
-*Optional Channels* section, pick a source column, give each a short (≤4 character)
-label, and optionally a **single-character unit** (e.g. `b`, `C`) that is appended
-to the value (e.g. `350b`, `87C`). Each dash places Channel A / B sensibly for its
-layout. If a channel isn't selected it simply doesn't appear.
+---
 
-## Separate overlay graphics
-
-Two optional tick-boxes render **standalone overlay videos** alongside the main
-dashboard (positionable anywhere in your editor):
-
-- **Track map** (`<name>_trackmap.mp4`) — the circuit outline from GPS, coloured by
-  speed, with a moving position dot. Needs GPS lat/lon in the log.
-- **G-force trace** (`<name>_gtrace.mp4`) — a cropped G-G plot (lateral ±2.5G,
-  longitudinal ±2.0G, 0.5G grid), speed-coloured, with live Lat/Lon readouts.
-
-## Requirements
-
-- Python 3.10+
-- `Pillow`, `aggdraw`, `numpy`, `pandas` (see `requirements.txt`)
-- `tkinter` (bundled with CPython; on Debian/Ubuntu: `sudo apt install python3-tk`)
-- `ffmpeg` on your `PATH` (for video export)
+## Installing
 
 ```bash
 pip install -r requirements.txt
 ```
 
-The `BigShoulders-Bold.ttf` font must sit next to the Python modules; the
-renderer falls back to DejaVu if it's missing.
+Requirements:
 
-## Running
+- Python 3.10 or newer
+- `tkinter` — bundled with CPython on Windows and macOS; on Debian/Ubuntu
+  `sudo apt install python3-tk`
+- **ffmpeg** on your `PATH`, or `ffmpeg.exe` beside the source. Not bundled here;
+  download it from <https://ffmpeg.org/download.html>.
+- **AiM logs only:** AiM's `MatLabXRK` DLL and its dependencies, from a
+  RaceStudio 3 installation. Not bundled — it is AiM's software, not ours. Put it
+  beside the source or point `XRK_DLL_PATH` at it. CSV and VBO need nothing extra.
+
+Run it:
 
 ```bash
 python ecu_overlay_app.py
 ```
 
-1. Load a log file (CSV; VBO/AiM if the optional readers are present).
-2. Map columns to channels and (optionally) set Channel A / B.
-3. Choose a dashboard style and output resolution.
-4. Set lap detection / timing options.
-5. Export — produces a chroma-key overlay video.
+---
+
+## Using it
+
+The window is organised as tabs, with the settings that apply to the whole job in
+a bar along the bottom.
+
+- **Data** — load the log, map columns to channels, invert any that read backwards
+- **Laps** — how laps are detected: beacons in the file, a GPS start/finish line,
+  point-to-point for hillclimbs and stages, or an estimated lap time
+- **Dash**, **G-Plot**, **Track Map**, **Lap Data** — one tab per overlay, each
+  with a live preview beside the controls and a time scrubber under the picture
+
+The bottom bar holds the export time range, output fps, the render buttons and
+progress, plus a light/dark theme toggle in the corner. The output file is named
+after the log you loaded.
+
+Previews redraw automatically about 300 ms after you change any setting, and only
+for the tab you are looking at.
+
+---
+
+## Notes on how it works
+
+**Text does not jitter.** The display fonts are proportional, so a centred number
+would slide sideways as its digits changed. Every digit is drawn in a fixed-width
+cell (`textgrid.py`), so a value's position depends only on the slot it occupies.
+
+**Shift-light colours** follow a redline estimated from the data — the 99.5th
+percentile of rpm, not the peak, so a single spike cannot push the bands out of
+reach. Bands are proportional to it, so they behave the same on a 6000 rpm diesel
+and a 15000 rpm bike engine.
+
+**Lap timing** counts up live through a lap, then shows the completed time.
+
+**Backgrounds** for the gauge dashes are generated once and cached per render.
+
+---
+
+## Tests
+
+```bash
+python jitter_test.py      # fixed digit-pitch text engine; no readout may move
+python tests/ui_smoke.py   # builds the whole UI headlessly and exercises it
+```
+
+`tests/ui_smoke.py` uses a stub tkinter (`tests/stubs`) so the interface can be
+built and driven without a display: it walks every tab, every overlay setting and
+every dash style, rendering each preview for real through PIL. See
+`tests/README.md`.
+
+---
 
 ## Project layout
 
 ```
-ecu_overlay_app.py     # tkinter desktop GUI
-renderer_pil.py        # multi-style frame renderer + video export pipeline
-dash8_render.py        # standalone Dash 8 / 8b gauge renderer
-trackmap_render.py     # standalone track-map overlay renderer (separate video)
-BigShoulders-Bold.ttf  # display font used across dashes
-Poppins-Bold.ttf       # modern bold face used for Dash 1/2 data text
-requirements.txt
+ecu_overlay_app.py     desktop app: tabs, previews, render jobs
+renderer_pil.py        dashboard renderer, style table, video pipeline
+dash8_render.py        the Dash 8 / 8b circular gauge
+trackmap_render.py     track map overlay
+gtrace_render.py       G-force trace overlay
+lapdata_render.py      lap data overlay
+textgrid.py            fixed digit-pitch text, shared by every renderer
+vbo_reader.py          VBO parser
+xrk_reader.py          AiM reader front end
+xrk_helper.py          subprocess that talks to the AiM DLL
+diagnose_aim.py        prints what the app sees in a log; useful for mapping bugs
+tests/                 headless UI smoke test and its tkinter stubs
 ```
 
-Optional, loaded lazily if present: `renderer_multistyle.py`, `vbo_reader.py`,
-`aim_reader.py`.
+---
 
-## Track map overlay
+## Licence
 
-Tick **"Generate track map graphic"** before rendering to also produce a
-*separate* video file (`<name>_trackmap.mp4`) containing the track outline drawn
-from GPS lat/lon, coloured by speed, with a moving dot for the current position.
-It's a standalone chroma-key overlay you position anywhere over your footage,
-independent of the chosen dashboard. Requires GPS latitude/longitude in the log
-(set them in the Lap section if not auto-detected).
+LapStudio is MIT licensed — see `LICENSE`.
 
-## Notes
+The two bundled fonts are not covered by that licence:
 
-- Lap timer counts up live during a lap, then shows the completed lap time
-  briefly after the line.
-- The G-trace can be coloured by speed.
-- Backgrounds for the Dash 8 family are generated once and cached per render.
+- **Big Shoulders Display** and **Poppins** are licensed under the
+  SIL Open Font License 1.1. See `FONT-LICENSES.md`.
+
+ffmpeg and the AiM DLL are not distributed with this project; install them
+yourself as described above.
+
+**Telemetry logs are not included.** The tests generate their own synthetic data,
+so nothing in this repository contains anyone's session data.

@@ -353,6 +353,163 @@ RESOLUTIONS = {
 }
 
 # Style name aliases
+# ── Style capability metadata ────────────────────────────────────────────────
+# Which layouts actually draw the trailing G-trace / speed trail. Determined by
+# rendering each style with a flat trace and with a varying one and comparing the
+# pixels: only these five respond, so the trail controls are pointless elsewhere.
+_TRAIL_LAYOUTS = ("style13_layout", "style14_layout", "style20_layout",
+                  "style30_layout", "style31_layout")
+
+# Layouts whose content is a solid panel that does NOT fill the frame. Their
+# output can be cropped to that panel, which removes the need to chroma key at
+# all. Verified: zero chroma pixels remain inside the cropped area.
+_CROP_LAYOUTS = ("style12_layout", "style14_layout")
+
+
+# Layouts whose graphic fills the frame opaquely: there is no chroma area, so the
+# backdrop selection has nothing to colour and no keying is needed.
+_OPAQUE_LAYOUTS = ("style11_layout", "style20_layout")
+
+
+# Band edges as a fraction of the redline. Proportional rather than fixed rpm
+# offsets so the bands mean the same thing on a 6000 rpm diesel and a 15000 rpm
+# bike engine.
+RPM_BAND_YELLOW = 0.93
+RPM_BAND_ORANGE = 0.96
+RPM_BAND_RED    = 0.985
+
+
+def auto_redline(rpm_values):
+    """Estimate the shift point from the data: the 99.5th percentile, to the
+    nearest 100 rpm.
+
+    NOT the peak, and not the gauge scale. The gauge scale is the peak rounded UP
+    to the next 1000, which sits above anything the driver used - on a real log
+    peaking at 11148 that put the first warning band at 11000, reached for 0.009%
+    of the session, so the ring stayed green all day. A high percentile lands on
+    where the driver actually shifts, so the bands light up on every upshift.
+    The percentile (not the max) also ignores single-sample sensor spikes.
+    """
+    try:
+        import numpy as _np
+        v = _np.asarray(rpm_values, dtype=float)
+        v = v[_np.isfinite(v)]
+        if len(v) < 10:
+            return None
+        rl = float(_np.percentile(v, 99.5))
+        if rl < 500:
+            return None
+        return max(1000.0, round(rl / 100.0) * 100.0)
+    except Exception:
+        return None
+
+
+def style_frame_size(P, base=(1920, 750)):
+    """The output frame a style wants, decided by its layout flags.
+
+    Names used to carry this - `if style == "Dash 10 (Arc)": (2560, 750)` in a
+    dozen places - which made the display names load-bearing and renaming risky.
+    The flags are the real property; the name is just a label.
+    """
+    if not P:
+        return base
+    # The two text styles are flagged style4_layout (vertical columns) and
+    # style7_layout (horizontal rows) - historical names, not display names.
+    if P.get("style4_layout") or P.get("style7_layout") or P.get("style8_layout"):
+        return (1920, 1080)        # text columns / rows need the height
+    if P.get("style32_layout"):
+        return (2560, 750)         # Dash 10's arcs need side margins
+    return base
+
+
+def style_trail_fixed_secs(P):
+    """Some styles pin their trail length regardless of the setting."""
+    if P and P.get("style14_layout"):
+        return 10.0                # Dash 6's plots are always a 10s window
+    return None
+
+
+def rpm_stage_colour(rpm, rpm_max, redline=None):
+    """Stepped rpm colour: green, then yellow / orange / red approaching the
+    redline. Hard steps, not a blend, so a glance tells you which band you are in.
+
+    Defined once here because Dash 3's rpm bar and the Dash 8 / 8b gauge ring must
+    agree. `redline` should come from auto_redline(); it falls back to the gauge
+    scale when unknown.
+    """
+    try:
+        rpm = float(rpm)
+        rl = float(redline) if redline else float(rpm_max)
+    except (TypeError, ValueError):
+        return (30, 200, 60)
+    if rl <= 0:
+        return (30, 200, 60)
+    if rpm >= RPM_BAND_RED * rl:
+        return (220, 40, 40)
+    if rpm >= RPM_BAND_ORANGE * rl:
+        return (255, 140, 0)
+    if rpm >= RPM_BAND_YELLOW * rl:
+        return (240, 210, 0)
+    return (30, 200, 60)
+
+
+def style_is_opaque(P):
+    """True if this style leaves no chroma in the frame at all."""
+    if not P:
+        return False
+    return any(P.get(k) for k in _OPAQUE_LAYOUTS)
+
+
+def style_has_trail(P):
+    """True if this style draws the trailing trace the trail controls affect."""
+    if not P:
+        return False
+    return any(P.get(k) for k in _TRAIL_LAYOUTS)
+
+
+def style_can_crop(P):
+    """True if this style's panel can be cropped out of the chroma frame."""
+    if not P:
+        return False
+    return any(P.get(k) for k in _CROP_LAYOUTS)
+
+
+def content_crop_rect(images, chroma, pad=0):
+    """Union bounding box of everything that is not the backdrop colour.
+
+    Takes several frames so an element that only appears sometimes still fits.
+    Returns (x0, y0, x1, y1) with even width/height (h.264 needs even dimensions),
+    or None if every pixel is content (nothing to crop).
+    """
+    import numpy as _np
+    x0 = y0 = None
+    x1 = y1 = 0
+    w = h = 0
+    for im in images:
+        a = _np.asarray(im.convert("RGB"))
+        h, w = a.shape[0], a.shape[1]
+        m = ~((a[..., 0] == chroma[0]) & (a[..., 1] == chroma[1]) & (a[..., 2] == chroma[2]))
+        ys, xs = _np.nonzero(m)
+        if len(xs) == 0:
+            continue
+        bx0, bx1 = int(xs.min()), int(xs.max()) + 1
+        by0, by1 = int(ys.min()), int(ys.max()) + 1
+        x0 = bx0 if x0 is None else min(x0, bx0)
+        y0 = by0 if y0 is None else min(y0, by0)
+        x1 = max(x1, bx1); y1 = max(y1, by1)
+    if x0 is None:
+        return None
+    x0 = max(0, x0 - pad); y0 = max(0, y0 - pad)
+    x1 = min(w, x1 + pad); y1 = min(h, y1 + pad)
+    if (x1 - x0) % 2:
+        x1 = x1 - 1 if x1 > x0 + 1 else min(w, x1 + 1)
+    if (y1 - y0) % 2:
+        y1 = y1 - 1 if y1 > y0 + 1 else min(h, y1 + 1)
+    if (x1 - x0) >= w and (y1 - y0) >= h:
+        return None            # nothing to crop
+    return (x0, y0, x1, y1)
+
+
 STYLES["Dash 1 (white gauge)"] = STYLES["Style 5"]
 STYLES["Dash 2 (black gauge)"] = STYLES["Style 10"]
 STYLES["Dash 3"] = STYLES["Style 11"]
@@ -360,8 +517,61 @@ STYLES["Dash 4"] = STYLES["Style 12"]
 STYLES["Dash 5"] = STYLES["Style 13"]
 STYLES["Dash 6 (Logger)"] = STYLES["Style 14"]
 STYLES["Dash 6b (Wide Logger)"] = STYLES["Style 20"]
-STYLES["Vertical Text"] = STYLES["Style 7"]
-STYLES["Horizontal Text"] = STYLES["Style 8"]
+STYLES["Vertical Text"] = STYLES["Style 7"]        # legacy name
+STYLES["Horizontal Text"] = STYLES["Style 8"]      # legacy name
+
+# ── Dash 7 (HUD: RPM gauge left, G-trace right, data labels between) ─────────
+# Uses the repaired backing image (assets/dash_hud_bg.png): two circles joined
+# by a black bar. RPM gauge (Dash-2 style) sits in the left circle, a circular
+# G-trace in the right circle, and Speed / Gear / Lap / Throttle-Brake shown as
+# label+value stacks along the bar between them.
+STYLES["Style 30"] = dict(STYLES["Style 10"])   # inherit Dash-2 black-gauge look
+STYLES["Style 30"].update({
+    "style30_layout": True,
+    "gauge_no_rpm_text": True,
+    "hud_bg": "dash_hud_bg.png",
+    "hud_label": (150, 165, 200),   # dim blue-grey labels
+    "hud_value": (235, 240, 250),   # bright values
+    "hud_value_outline": (0, 0, 0),
+    "hud_gtrace_grid": (70, 80, 110),
+    "hud_gtrace_cross": (150, 165, 205),
+    "hud_gtrace_dot": (40, 160, 255),
+    "hud_gtrace_trail": (40, 160, 255),
+})
+for _k in ("style5_layout", "style9_layout", "style5_transparent"):
+    STYLES["Style 30"].pop(_k, None)
+STYLES["Dash 7 (HUD)"] = STYLES["Style 30"]
+
+# ── Dash 8 (Triple: RPM + Speed gauges, G-trace, data) ───────────────────────
+# Three gauges (RPM, Speed overlapping/lower, circular G-trace) then data stacks.
+STYLES["Style 31"] = dict(STYLES["Style 30"])
+STYLES["Style 31"].update({
+    "style30_layout": False,
+    "style31_layout": True,
+    "hud_bg": "dash_hud2_bg.png",
+    "gauge_start_ang": 225,   # 8 o'clock
+    "gauge_sweep": 270,       # sweep over the top to 4 o'clock, bottom 90° clear
+})
+STYLES["Dash 9 (Triple)"] = STYLES["Style 31"]
+
+# ── Dash 10 (Arc: concentric RPM/throttle/brake arcs, no background) ─────────
+# Right-side arc cluster (inner=RPM with 1..N numbers, middle=throttle green,
+# outer=brake red), speed/rpm/gear right-justified inside the arc, lap time
+# centred, track map + G-trace on the left. No background — chroma-keyed.
+STYLES["Style 32"] = dict(STYLES["Style 31"])
+STYLES["Style 32"].update({
+    "style31_layout": False,
+    "style32_layout": True,
+    "arc_rpm_col": (245, 245, 248),
+    "arc_thr_col": (30, 200, 70),
+    "arc_brk_col": (220, 30, 30),
+    "arc_track_col": (60, 62, 70),
+    "gtrace_outlined_axes": True,
+    "arc_band_pattern": "fade",     # Dash-8 style radial fade behind the numbers
+})
+for _k in ("hud_bg",):
+    STYLES["Style 32"].pop(_k, None)
+STYLES["Dash 10 (Arc)"] = STYLES["Style 32"]
 
 # ── Dash 8 (circular telemetry gauge) ─────────────────────────────────────
 STYLES["Style 16"] = {
@@ -380,7 +590,12 @@ STYLES["Style 17"] = {
     "green":         (50, 205, 80),
     "grey":          (110, 110, 140),
 }
-STYLES["Dash 8"]          = STYLES["Style 16"]
+STYLES["Dash 8"]          = STYLES["Style 16"]     # legacy name
+# The "(Chroma)" twins differ only in which prebuilt background they pick, and
+# that choice is overridden whenever a backdrop colour is supplied - which the app
+# always does now that Backdrop is a setting. They render identically to their
+# plain twins, so they are no longer offered in the UI; the entries stay so any
+# saved setting still resolves.
 STYLES["Dash 8 (Chroma)"] = STYLES["Style 17"]
 
 # Dash 8b — variant with throttle/brake bars inside the gauge
@@ -402,8 +617,46 @@ STYLES["Style 19"] = {
     "green":         (50, 205, 80),
     "grey":          (110, 110, 140),
 }
-STYLES["Dash 8b (bars inside)"]        = STYLES["Style 18"]
+STYLES["Dash 8b (bars inside)"]        = STYLES["Style 18"]   # legacy name
 STYLES["Dash 8b (bars inside, Chroma)"] = STYLES["Style 19"]
+
+
+# ── Display names ───────────────────────────────────────────────────────────
+# Every dash carries a short descriptor and the list is ordered numerically (8
+# used to sit after 10). The older names above remain as hidden aliases so
+# anything that still refers to them keeps working.
+STYLES["Dash 1 · Round gauge, light"]           = STYLES["Style 5"]
+STYLES["Dash 2 · Round gauge, dark"]            = STYLES["Style 10"]
+STYLES["Dash 3 · Full panel"]                   = STYLES["Style 11"]
+STYLES["Dash 4 · Data strip"]                   = STYLES["Style 12"]
+STYLES["Dash 5 · Gear centre"]                  = STYLES["Style 13"]
+STYLES["Dash 6 · Logger"]                       = STYLES["Style 14"]
+STYLES["Dash 6b · Logger, wide"]                = STYLES["Style 20"]
+STYLES["Dash 7 · HUD strip"]                    = STYLES["Style 30"]
+STYLES["Dash 8 · Circular gauge"]               = STYLES["Style 16"]
+STYLES["Dash 8b · Circular gauge, bars inside"] = STYLES["Style 18"]
+STYLES["Dash 9 · Triple gauge"]                 = STYLES["Style 31"]
+STYLES["Dash 10 · Twin arcs"]                   = STYLES["Style 32"]
+STYLES["Text · Vertical columns"]               = STYLES["Style 7"]
+STYLES["Text · Horizontal rows"]                = STYLES["Style 8"]
+
+# The order the UI offers them in.
+DASH_NAMES = [
+    "Dash 1 · Round gauge, light",
+    "Dash 2 · Round gauge, dark",
+    "Dash 3 · Full panel",
+    "Dash 4 · Data strip",
+    "Dash 5 · Gear centre",
+    "Dash 6 · Logger",
+    "Dash 6b · Logger, wide",
+    "Dash 7 · HUD strip",
+    "Dash 8 · Circular gauge",
+    "Dash 8b · Circular gauge, bars inside",
+    "Dash 9 · Triple gauge",
+    "Dash 10 · Twin arcs",
+    "Text · Vertical columns",
+    "Text · Horizontal rows",
+]
 
 # Dash 8 module + cached backgrounds (built once per render run)
 try:
@@ -422,6 +675,15 @@ def _dash8_get_bg(chroma, rpm_max=9000):
             _dash8_bg_cache[key] = _dash8.build_background(rpm_max=rpm_max)
     return _dash8_bg_cache[key]
 
+
+def _dash8_bg_for(colour, rpm_max=9000):
+    """Dash 8 background filled with an arbitrary backdrop `colour` (chroma-key
+    field), cached per colour."""
+    key = ("c", tuple(colour), int(rpm_max))
+    if key not in _dash8_bg_cache:
+        _dash8_bg_cache[key] = _dash8.build_background_chroma(chroma=tuple(colour), rpm_max=rpm_max)
+    return _dash8_bg_cache[key]
+
 def _font(size, bold=True):
     paths = [
         'C:/Windows/Fonts/courbd.ttf',
@@ -437,11 +699,16 @@ def _font(size, bold=True):
                 pass
     return ImageFont.load_default()
 
-def _tc(draw, xy, text, fnt, color):
-    """Draw text centred at xy."""
-    bb = draw.textbbox((0,0), text, font=fnt)
-    tw, th = bb[2]-bb[0], bb[3]-bb[1]
-    draw.text((xy[0]-tw//2-bb[0], xy[1]-th//2-bb[1]), text, font=fnt, fill=color)
+from textgrid import _vmask, _scratch_draw, _HAS_STROKE
+
+def _tc(draw, xy, text, fnt, color, vref=None, slots=None):
+    """Draw text centred at xy.
+
+    Digits sit on a fixed pitch (see _gtext) so the label cannot shift as the
+    value changes. `vref` is the vertical metric reference (see _vmask); `slots`
+    reserves the field at its widest, e.g. "888".
+    """
+    _gtext(draw, xy, text, fnt, color, anchor="mm", vref=vref, slots=slots)
 
 def _chan_vstr(chan, which):
     """Format a channel's value with its optional single-char unit, e.g. '350' or '350b'.
@@ -453,19 +720,23 @@ def _chan_vstr(chan, which):
     u = (chan.get(f"{which}_unit") or "") if chan else ""
     return f"{int(round(v))}{u}"
 
-def _tc_outlined(draw, xy, text, fnt, color, outline=(0,0,0), ow=2):
-    """Draw text centred at xy with dark outline stroke."""
-    bb = draw.textbbox((0,0), text, font=fnt)
-    tw, th = bb[2]-bb[0], bb[3]-bb[1]
-    # Account for the font's bbox origin (ascent/side bearing) so the glyphs
-    # are truly centred — important for faces like Poppins with large bearings.
-    x0 = xy[0] - tw//2 - bb[0]
-    y0 = xy[1] - th//2 - bb[1]
-    for dx in range(-ow, ow+1):
-        for dy in range(-ow, ow+1):
-            if dx or dy:
-                draw.text((x0+dx, y0+dy), text, font=fnt, fill=outline)
-    draw.text((x0, y0), text, font=fnt, fill=color)
+def _tc_outlined(draw, xy, text, fnt, color, outline=(0,0,0), ow=2, vref=None,
+                 slots=None, anchor="mm"):
+    """Draw text centred at xy with a dark outline stroke.
+
+    Digits are laid out on a fixed pitch (see _gtext), so a changing value can
+    never shift the label sideways.
+
+    vref:  reference string for vertical placement (see _vmask).
+    slots: template for the widest value the field will show, e.g. "888".
+    """
+    _gtext(draw, xy, text, fnt, color, anchor=anchor, outline=outline, ow=ow,
+           vref=vref, slots=slots)
+
+
+# Fixed digit-pitch text engine - shared by every renderer (see textgrid.py).
+from textgrid import (_gtext, _gwidth, _vw, _cells, _digit_pitch)
+
 
 def _alpha_col(base, alpha_frac):
     """Darken a colour by alpha fraction (simulate transparency over dark bg)."""
@@ -473,41 +744,89 @@ def _alpha_col(base, alpha_frac):
 
 # Big Shoulders wide font for Dash-8-style panel text
 def _find_bsb_font():
-    import os
+    import os, sys
     here = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else "."
-    for p in [os.path.join(here,"BigShoulders-Bold.ttf"),
+    _meipass = getattr(sys, "_MEIPASS", None)   # PyInstaller bundle dir
+    _cands = [os.path.join(here,"BigShoulders-Bold.ttf"),
               "/home/claude/BigShoulders-Bold.ttf",
-              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]:
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
+    if _meipass:
+        _cands.insert(0, os.path.join(_meipass, "BigShoulders-Bold.ttf"))
+    for p in _cands:
         if os.path.exists(p): return p
     return None
 _BSB_PATH = _find_bsb_font()
 
+_BSB_CACHE = {}
+
+
+def _bsb(size):
+    """Cached Big Shoulders font."""
+    from PIL import ImageFont as _IF
+    size = int(size)
+    f = _BSB_CACHE.get(size)
+    if f is None:
+        f = _IF.truetype(_BSB_PATH, size)
+        _BSB_CACHE[size] = f
+    return f
+
+
+_WP_CACHE = {}
+_WP_ORDER = []
+
+
 def _wide_panel_text(img, center, text, size, fill, max_w,
-                     ow=3, outline=(0,0,0), stretch=1.5):
+                     ow=3, outline=(0,0,0), stretch=1.5, vref=None, anchor="mm"):
     """Render text in Big Shoulders, stretched horizontally, with outline,
-    centred at `center`, shrunk to fit max_w. Matches the Dash 8 look."""
+    centred at `center`, shrunk to fit max_w. Matches the Dash 8 look.
+
+    vref: optional reference string. When given, the fit-shrink and the layer's
+    vertical metrics use this string instead of `text`, so the size and vertical
+    position stay constant frame-to-frame as the value changes. anchor 'lm'
+    left-aligns (left edge fixed) instead of centring horizontally."""
     from PIL import ImageFont as _IF, ImageDraw as _ID, Image as _IM
     if _BSB_PATH is None:
         return
-    _sz = size
-    while _sz > 8:
-        fnt=_IF.truetype(_BSB_PATH,_sz)
-        tmp=_IM.new("RGBA",(10,10)); td=_ID.Draw(tmp)
-        bb=td.textbbox((0,0),text,font=fnt)
-        if int((bb[2]-bb[0])*stretch) <= max_w: break
-        _sz -= 2
-    fnt=_IF.truetype(_BSB_PATH,_sz)
-    tmp=_IM.new("RGBA",(10,10)); td=_ID.Draw(tmp)
-    bb=td.textbbox((0,0),text,font=fnt); tw=bb[2]-bb[0]; th=bb[3]-bb[1]; pad=ow+4
-    layer=_IM.new("RGBA",(tw+2*pad,th+2*pad),(0,0,0,0)); ld=_ID.Draw(layer)
-    for dx in range(-ow,ow+1):
-        for dy in range(-ow,ow+1):
-            if dx*dx+dy*dy<=ow*ow:
-                ld.text((pad-bb[0]+dx,pad-bb[1]+dy),text,font=fnt,fill=outline)
-    ld.text((pad-bb[0],pad-bb[1]),text,font=fnt,fill=fill)
-    layer=layer.resize((int(layer.width*stretch),layer.height),_IM.LANCZOS)
+    # The field is reserved at the width of its digit mask (or `vref`), so the
+    # layer size - and therefore the paste position - never changes with the
+    # value. Digits inside sit on a fixed pitch (see _gtext). The finished layer
+    # is cached: labels are identical every frame and values repeat constantly.
+    _ref = vref if vref is not None else _vmask(text)
+    _key = (text, int(size), int(max_w),
+            tuple(fill) if isinstance(fill, (tuple, list)) else fill,
+            int(ow), tuple(outline) if isinstance(outline, (tuple, list)) else outline,
+            round(float(stretch), 3), _ref, (anchor or "mm")[0])
+    layer = _WP_CACHE.get(_key)
+    if layer is None:
+        _sz = size
+        # Cached fonts + one shared scratch canvas: building a font per call cost
+        # ~8 font constructions per frame on Dash 5.
+        while _sz > 8:
+            fnt=_bsb(_sz)
+            if int(_gwidth(_ref, fnt)*stretch) <= max_w: break
+            _sz -= 2
+        fnt=_bsb(_sz)
+        td=_scratch_draw()
+        pad=ow+4
+        res_w=int(round(max(_gwidth(_ref, fnt), _gwidth(text, fnt))))
+        vb=td.textbbox((0,0),_ref,font=fnt); th=vb[3]-vb[1]
+        layer=_IM.new("RGBA",(res_w+2*pad,th+2*pad),(0,0,0,0)); ld=_ID.Draw(layer)
+        # Align inside the reserved field per the caller's anchor, so a centred
+        # readout centres on its own digits and not on the widest it could be.
+        _ha = (anchor or "mm")[0]
+        _ox = pad + (res_w / 2.0 if _ha == "m" else res_w if _ha == "r" else 0)
+        _gtext(ld,(_ox,pad),text,fnt,fill,anchor=_ha+"t",outline=outline,ow=int(ow),
+               vref=_ref,slots=_ref)
+        layer=layer.resize((max(1,int(layer.width*stretch)),layer.height),_IM.LANCZOS)
+        _WP_CACHE[_key] = layer
+        _WP_ORDER.append(_key)
+        if len(_WP_ORDER) > 400:
+            _WP_CACHE.pop(_WP_ORDER.pop(0), None)
     cx,cy=center
-    img.paste(layer,(int(cx-layer.width/2),int(cy-layer.height/2)),layer)
+    if anchor=="lm":
+        img.paste(layer,(int(cx),int(cy-layer.height/2)),layer)
+    else:
+        img.paste(layer,(int(cx-layer.width/2),int(cy-layer.height/2)),layer)
 
 def _draw_hex_mesh(d, x0, y0, x1, y1, size=18, col=(30,32,48), line_w=1):
     """Draw a subtle hexagonal mesh pattern in a rectangle."""
@@ -546,12 +865,16 @@ def fc(size):
 
 # ── Poppins (modern bold display face for Dash 1/2) ──────────────────────────
 def _find_poppins_font():
-    import os
+    import os, sys
     here = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else "."
-    for p in [os.path.join(here, "Poppins-Bold.ttf"),
+    _meipass = getattr(sys, "_MEIPASS", None)   # PyInstaller bundle dir
+    _cands = [os.path.join(here, "Poppins-Bold.ttf"),
               "/home/claude/Poppins-Bold.ttf",
               "C:/Windows/Fonts/Poppins-Bold.ttf",
-              "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf"]:
+              "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf"]
+    if _meipass:
+        _cands.insert(0, os.path.join(_meipass, "Poppins-Bold.ttf"))
+    for p in _cands:
         if os.path.exists(p):
             return p
     return None
@@ -617,15 +940,20 @@ def fi(size):
 _GAUGE_BG_CACHE = {}
 _BOX_BURST_CACHE = {}  # (bW, bH, bc, be) -> PIL Image
 
-def _build_gauge_bg(cx, cy, radius, w=None, h=None, rpm_max=9000, P=None):
-    """Render the static parts of the gauge — face, ticks, numbers, rings."""
+def _build_gauge_bg(cx, cy, radius, w=None, h=None, rpm_max=9000, P=None,
+                    n_marks=None, label_values=None):
+    """Render the static parts of the gauge — face, ticks, numbers, rings.
+    Default: RPM gauge, majors every 1000 rpm labelled 1..(rpm_max/1000).
+    Pass n_marks + label_values (list of strings) for a custom scale such as a
+    speed gauge."""
     P = P or STYLES["Style 5"]
     _w = w or W_VID; _h = h or H_VID
     START_ANG = P.get("gauge_start_ang", 225)
     SWEEP     = P.get("gauge_sweep",     270)
     _panel_key = P.get("panel", (0,0,0)) if P else (0,0,0)
     _subface_key = P.get("subface", (0,0,0)) if P else (0,0,0)
-    key = (cx, cy, radius, _w, _h, rpm_max, START_ANG, SWEEP, _panel_key, _subface_key)
+    key = (cx, cy, radius, _w, _h, rpm_max, START_ANG, SWEEP, _panel_key, _subface_key,
+           n_marks, tuple(label_values) if label_values else None)
     if key in _GAUGE_BG_CACHE:
         return _GAUGE_BG_CACHE[key]
 
@@ -707,7 +1035,7 @@ def _build_gauge_bg(cx, cy, radius, w=None, h=None, rpm_max=9000, P=None):
 
     # Minor ticks — evenly spaced across sweep (needle scale: 0→rpm_max)
     TR_OUT = int(r0*0.715); TR_MIN = int(r0*0.690)
-    _n_marks = rpm_max // 1000
+    _n_marks = n_marks if n_marks is not None else rpm_max // 1000
     N_MINOR  = _n_marks * 5   # 5 minor per major
     for i in range(N_MINOR + 1):
         frac_i = i / N_MINOR
@@ -745,7 +1073,8 @@ def _build_gauge_bg(cx, cy, radius, w=None, h=None, rpm_max=9000, P=None):
         lx = cx + NUM_R*math.cos(a)
         ly = cy - NUM_R*math.sin(a)
         if ly > _clip_y: continue
-        _tc(d, (int(lx), int(ly)), str(i), fnt_n, P["white"])
+        _txt = label_values[i-1] if (label_values and i-1 < len(label_values)) else str(i)
+        _tc(d, (int(lx), int(ly)), _txt, fnt_n, P["white"])
 
     # Inner sub-face
     ir = int(r0*0.460)
@@ -791,7 +1120,8 @@ def _build_gauge_bg(cx, cy, radius, w=None, h=None, rpm_max=9000, P=None):
         lx = cx + NUM_R*math.cos(a)
         ly = cy - NUM_R*math.sin(a)
         if ly > _clip_y: continue
-        _tc(d, (int(lx), int(ly)), str(i), fnt_n, _num_col)
+        _txt = label_values[i-1] if (label_values and i-1 < len(label_values)) else str(i)
+        _tc(d, (int(lx), int(ly)), _txt, fnt_n, _num_col)
 
     _GAUGE_BG_CACHE[key] = img
     return img
@@ -816,22 +1146,35 @@ def _draw_gauge_dynamic(base_img, cx, cy, radius, rpm, rpm_max=9000, peak_rpm=No
     # Pre-compute how many segments to light
     n_lit = int(frac * N_SEGS)
     _dyn_clip_y = (cy + int(r0*0.460) + 8) if P and P.get("style15_layout") else 9999
+
+    # All lit ticks share ONE colour, driven by current RPM fraction: it shifts
+    # green → yellow → orange → red as revs rise toward the limit. The whole arc
+    # changes together (not divided into fixed positional bands).
+    def _rpm_colour(f):
+        f = max(0.0, min(1.0, f))
+        # piecewise-linear through green, yellow, orange, red
+        stops = [(0.00, (30, 200, 60)),
+                 (0.55, (180, 220, 0)),
+                 (0.75, (255, 165, 0)),
+                 (0.90, (255, 80, 0)),
+                 (1.00, (220, 15, 15))]
+        for j in range(len(stops)-1):
+            f0, c0 = stops[j]; f1, c1 = stops[j+1]
+            if f <= f1:
+                t = 0.0 if f1 == f0 else (f - f0)/(f1 - f0)
+                return tuple(int(c0[k]*(1-t) + c1[k]*t) for k in range(3))
+        return stops[-1][1]
+
+    _lit_col = _rpm_colour(frac)
     if n_lit > 0:
         agg = aggdraw.Draw(img)
+        pen = aggdraw.Pen(_lit_col, ARC_W)
         for i in range(n_lit):
             fs      = i / N_SEGS
             a_start = START_ANG - fs * SWEEP
             a_end   = START_ANG - (i+1)/N_SEGS*SWEEP + SEG_GAP
             _seg_mid = math.radians((a_start+a_end)/2)
             if cy - ARC_R*math.sin(_seg_mid) > _dyn_clip_y: continue
-            if fs > 0.87:
-                col = P["red"]
-            elif fs > 0.70:
-                t   = (fs - 0.70) / 0.17
-                col = tuple(int(P["amber"][j]*(1-t) + P["amber2"][j]*t) for j in range(3))
-            else:
-                col = P["amber"]
-            pen = aggdraw.Pen(col, ARC_W)
             agg.arc([cx-ARC_R, cy-ARC_R, cx+ARC_R, cy+ARC_R],
                     a_end, a_start, pen)
         agg.flush()
@@ -843,14 +1186,16 @@ def _draw_gauge_dynamic(base_img, cx, cy, radius, rpm, rpm_max=9000, peak_rpm=No
     d.ellipse([cx-ir, cy-ir, cx+ir, cy+ir], fill=P["subface"])
     d.ellipse([cx-ir, cy-ir, cx+ir, cy+ir], outline=(30,30,45), width=2, fill=None)
 
-    # Digital RPM — data value
-    _tc(d, (cx, cy + int(r0*0.13)),
-        f"{int(rpm)}", fc(int(r0*0.260)), P.get("data", P["white"]))
+    # Digital RPM — data value (suppressed when the caller draws its own, e.g. HUD)
+    if not (P and P.get("gauge_no_rpm_text")):
+        _tc(d, (cx, cy + int(r0*0.13)),
+            f"{int(rpm)}", fc(int(r0*0.260)), P.get("data", P["white"]), vref="88888")
 
-    # Peak RPM (last gear) in smaller font below
-    if peak_rpm is not None:
-        _tc(d, (cx, cy + int(r0*0.32)),
-            f"({int(peak_rpm)})", fc(int(r0*0.130)), P.get("data", P["white"]))
+        # Peak RPM (last gear) in smaller font below
+        if peak_rpm is not None:
+            _tc(d, (cx, cy + int(r0*0.32)),
+                f"({int(peak_rpm)})", fc(int(r0*0.130)), P.get("data", P["white"]),
+                vref="(88888)")
 
     # Needle — tapered polygon
     na  = math.radians(START_ANG - frac*SWEEP)
@@ -962,9 +1307,14 @@ def find_lap_events(spd, ts, min_spd=185, min_gap=60.0, merge_gap=15.0):
             break
     return laps
 
-def get_timer_display(t_now, laps, show_duration=5.0, P=None, seconds_only=False):
+def get_timer_display(t_now, laps, show_duration=5.0, P=None, seconds_only=False,
+                      mmss=False):
     P = P or STYLES["Style 5"]
     def fmt(t):
+        if mmss:
+            # Minutes:seconds with 2 decimal places, e.g. 7:01.02
+            m = int(t)//60; s2 = t%60
+            return f"{m}:{s2:05.2f}"
         if seconds_only:
             return f"{t:05.2f}"
         m = int(t)//60; s2 = t%60
@@ -1087,9 +1437,8 @@ def _build_frame_style3(img, d, rpm, throttle, speed, gear,
     d.rectangle([0, 0, _w, _h], fill=BG)
 
     def _text_outlined(d2, xy, text, font, fill, outline=(0,0,0), ow=2):
-        x, y = xy
-        d2.text((x, y), text, font=font, fill=fill,
-                stroke_width=ow, stroke_fill=outline)
+        # fixed digit pitch, so values can't shift as they change
+        _gtext(d2, xy, text, font, fill, anchor="la", outline=outline, ow=ow)
 
     # ── Layout constants ──────────────────────────────────────────────────────
     PAD  = int(10*s)
@@ -1140,9 +1489,9 @@ def _build_frame_style3(img, d, rpm, throttle, speed, gear,
                        label, font=fnt, fill=lbl_col, outline=(0,0,0), ow=2)
 
         # Value — right-justified, outlined
-        bb2 = d.textbbox((0,0), val_str, font=fnt)
-        _text_outlined(d, (RIGHT_X - (bb2[2]-bb2[0]), lbl_y - (bb2[3]-bb2[1])//2),
-                       val_str, font=fnt, fill=val_col, outline=(0,0,0), ow=2)
+        bb2 = d.textbbox((0,0), _vmask(val_str), font=fnt)
+        _gtext(d, (RIGHT_X, lbl_y - (bb2[3]-bb2[1])//2), val_str, fnt, val_col,
+               anchor="ra", outline=(0,0,0), ow=2, vref=_vmask(val_str))
 
         # Separator line under label row
         d.line([(BAR_X, by+LBL_H), (RIGHT_X, by+LBL_H)],
@@ -1213,9 +1562,9 @@ def _build_frame_style3(img, d, rpm, throttle, speed, gear,
         bb = d.textbbox((0,0), label, font=fnt)
         d.text((BAR_X, lbl_y - (bb[3]-bb[1])//2), label, font=fnt,
                fill=lbl_col, stroke_width=2, stroke_fill=(0,0,0))
-        bb2 = d.textbbox((0,0), val_str, font=fnt)
-        d.text((RIGHT_X - (bb2[2]-bb2[0]), lbl_y - (bb2[3]-bb2[1])//2),
-               val_str, font=fnt, fill=col, stroke_width=2, stroke_fill=(0,0,0))
+        bb2 = d.textbbox((0,0), _vmask(val_str), font=fnt)
+        _gtext(d, (RIGHT_X, lbl_y - (bb2[3]-bb2[1])//2), val_str, fnt, col,
+               anchor="ra", outline=(0,0,0), ow=2, vref=_vmask(val_str))
 
         d.line([(BAR_X, by+LBL_H), (RIGHT_X, by+LBL_H)],
                fill=tuple(int(c*0.12) for c in col), width=1)
@@ -1296,7 +1645,7 @@ def _build_frame_style3(img, d, rpm, throttle, speed, gear,
         pts = []
         for i2 in range(n):
             tx2 = GG_CX + int(trace_glat[i2]*GU)
-            ty2 = GG_CY - int((-trace_glong_raw[i2])*GU)
+            ty2 = GG_CY - int((trace_glong_raw[i2])*GU)
             tx2 = max(GG_X+2, min(GG_X+GG_SZ-2, tx2))
             ty2 = max(PAD+2,  min(PAD+GG_SZ-2, ty2))
             pts.append((tx2,ty2))
@@ -1312,7 +1661,7 @@ def _build_frame_style3(img, d, rpm, throttle, speed, gear,
 
     # Current dot
     dx2 = GG_CX + int(g_lat*GU)
-    dy2 = GG_CY - int((-g_long)*GU)
+    dy2 = GG_CY - int((g_long)*GU)
     dx2 = max(GG_X+4, min(GG_X+GG_SZ-4, dx2))
     dy2 = max(PAD+4,  min(PAD+GG_SZ-4, dy2))
     dr2 = max(3, int(5*s))
@@ -1331,7 +1680,7 @@ def _build_frame_style3(img, d, rpm, throttle, speed, gear,
     _pad_x  = int(4*s); _pad_y = int(3*s)
     for _txt, _tx, _col in [
             (f"Lat {g_lat:+.2f}G",  GG_X + GG_SZ//4,   PURPLE),
-            (f"Lon {-g_long:+.2f}G", GG_X + GG_SZ*3//4, BLUE)]:
+            (f"Lon {g_long:+.2f}G", GG_X + GG_SZ*3//4, BLUE)]:
         _bb = d.textbbox((0, 0), _txt, font=_fnt_gg)
         _tw = _bb[2]-_bb[0]; _th = _bb[3]-_bb[1]
         d.rectangle([_tx-_tw//2-_pad_x, _live_y-_th//2-_pad_y,
@@ -1377,8 +1726,7 @@ def _build_frame_style5(img, d, rpm, throttle, speed, gear,
         _gear_str = str(gear) if gear > 0 else "N"
         _gear_fsz = max(9, int(ir * 1.43))  # 1.10 * 1.30
         while _gear_fsz > 6:
-            _bb = d.textbbox((0,0), _gear_str, font=ff(_gear_fsz))
-            if (_bb[2]-_bb[0]) < int(ir * 1.75): break
+            if _vw(_gear_str, ff(_gear_fsz)) < int(ir * 1.75): break
             _gear_fsz -= 1
         # Centre vertically in the sub-face circle so the gaps above and below
         # the glyph are even. (Previously offset 30% up, which sat too high.)
@@ -1402,8 +1750,12 @@ def _build_frame_style5(img, d, rpm, throttle, speed, gear,
             _rpm_zone_h      = _rpm_zone_bottom - _rpm_zone_top
             _rpm_str = str(int(rpm))
             _rpm_fsz = max(7, int(_rpm_zone_h * 0.44 * 1.30))  # +30%
+            # Size against a fixed-width reference (not the live value) so the
+            # font — and thus glyph height and vertical position — never changes
+            # as RPM changes. This is what keeps speed steady; do the same here.
+            _rpm_ref = _rpm_str if len(_rpm_str) > 5 else "88888"
             while _rpm_fsz > 6:
-                _bb = d.textbbox((0,0), _rpm_str, font=fc(_rpm_fsz))
+                _bb = d.textbbox((0,0), _rpm_ref, font=fc(_rpm_fsz))
                 if (_bb[2]-_bb[0]) < int(_r * 0.82): break
                 _rpm_fsz -= 1
             _rpm_cy = _rpm_zone_top + int(_rpm_zone_h * 0.28)  # moved up
@@ -1413,22 +1765,24 @@ def _build_frame_style5(img, d, rpm, throttle, speed, gear,
             if P.get("gauge_wide_font"):
                 _wide_panel_text(img, (_cx, _rpm_cy), _rpm_str,
                                  int(_rpm_fsz*0.95), _rpm_txt_col, int(_r*0.82),
-                                 ow=max(2,int(3*s)), outline=_rpm_out_col)
+                                 ow=max(2,int(3*s)), outline=_rpm_out_col,
+                                 vref="88888")
             else:
                 _tc_outlined(d, (_cx, _rpm_cy), _rpm_str,
-                             fp(_rpm_fsz), _rpm_txt_col, _rpm_out_col, max(1,int(2*s)))
+                             fp(_rpm_fsz), _rpm_txt_col, _rpm_out_col, max(1,int(2*s)),
+                             vref="88888")
             # Peak RPM — below main RPM number (clearer bold, brighter than grey)
             _pk_fsz = max(7, int(_rpm_fsz * 0.62))
             if peak_rpm is not None:
                 _pk_col = P.get("amber", (255, 175, 60))
-                # Position so it clears the RPM glyphs: half RPM height + half peak
-                # height + a small gap (measured from actual rendered heights).
-                _rpm_h = d.textbbox((0,0), _rpm_str, font=fp(_rpm_fsz))
-                _pk_h  = d.textbbox((0,0), "(0000)", font=fp(_pk_fsz))
+                # Position from FIXED reference heights (not the live RPM string)
+                # so the gap — and the peak's vertical position — never moves.
+                _rpm_h = d.textbbox((0,0), "88888", font=fp(_rpm_fsz))
+                _pk_h  = d.textbbox((0,0), "(00000)", font=fp(_pk_fsz))
                 _rpm_th = _rpm_h[3]-_rpm_h[1]; _pk_th = _pk_h[3]-_pk_h[1]
                 _pk_y = _rpm_cy + _rpm_th//2 + _pk_th//2 + int(6*s)
                 _tc_outlined(d, (_cx, _pk_y), f"({int(peak_rpm)})", fp(_pk_fsz),
-                             _pk_col, _rpm_out_col, max(1,int(2*s)))
+                             _pk_col, _rpm_out_col, max(1,int(2*s)), vref="(00000)")
 
         # SPEED — panel at 4 o'clock (suppressed for style15)
         if not P.get("style15_layout"):
@@ -1488,8 +1842,7 @@ def _build_frame_style5(img, d, rpm, throttle, speed, gear,
         _gear_str = str(gear) if gear > 0 else "N"
         _gear_fsz = max(9, int(_zone_h * 0.48))
         while _gear_fsz > 6:
-            _bb = d.textbbox((0,0), _gear_str, font=fc(_gear_fsz))
-            if (_bb[2]-_bb[0]) < int(_r * 0.55): break
+            if _vw(_gear_str, fc(_gear_fsz)) < int(_r * 0.55): break
             _gear_fsz -= 1
         _tc_outlined(d, (_zone_cx, _zone_top + int(_zone_h * 0.30)), _gear_str,
                      fc(_gear_fsz), _gear_col, _gear_out_col, max(2,int(3*s)))
@@ -1497,8 +1850,7 @@ def _build_frame_style5(img, d, rpm, throttle, speed, gear,
         _spd_str = str(int(speed))
         _spd_fsz = max(9, int(_zone_h * 0.44))
         while _spd_fsz > 6:
-            _bb = d.textbbox((0,0), _spd_str, font=fc(_spd_fsz))
-            if (_bb[2]-_bb[0]) < int(_r * 0.75): break
+            if _vw("888", fc(_spd_fsz)) < int(_r * 0.75): break
             _spd_fsz -= 1
         _tc_outlined(d, (_zone_cx, _zone_top + int(_zone_h * 0.76)), _spd_str,
                      fc(_spd_fsz), _spd_col, _spd_out_col, max(2,int(3*s)))
@@ -1559,24 +1911,28 @@ def _build_frame_style5(img, d, rpm, throttle, speed, gear,
     _ow = max(1,int(2*s))
     _data_col = P.get("data",P["white"])
 
-    def _plain_panel(x0,y0,x1,y1,text):
+    def _plain_panel(x0,y0,x1,y1,text,vref=None):
         d.rectangle([x0,y0,x1,y1], fill=P["panel"])
         bv=P.get("emboss_light",P["grey"]); bs=P.get("emboss_dark",(0,0,0))
         bw=max(2,int(3*s))
         d.line([x0,y0,x1,y0],fill=bv,width=bw); d.line([x0,y0,x0,y1],fill=bv,width=bw)
         d.line([x0,y1,x1,y1],fill=bs,width=bw); d.line([x1,y0,x1,y1],fill=bs,width=bw)
+        # Size against a fixed reference (not the live value) so the font and
+        # vertical position stay put as the value changes — same trick speed uses.
+        _ref = vref if vref is not None else text
         if P.get("panel_wide_font"):
             # Dash-8 style: Big Shoulders stretched 1.5× with black outline
             _wide_panel_text(img, ((x0+x1)//2,(y0+y1)//2), text,
                              max(14,int(_TXT_SZ*0.9)), P["white"],
-                             (x1-x0)-int(10*s))
+                             (x1-x0)-int(10*s), vref=_ref)
             return
         _fsz = _TXT_SZ
         while _fsz > 8:
-            _bb=d.textbbox((0,0),text,font=fp(_fsz))
+            _bb=d.textbbox((0,0),_ref,font=fp(_fsz))
             if (_bb[2]-_bb[0]) < (x1-x0)-int(8*s): break
             _fsz -= 1
-        _tc_outlined(d,((x0+x1)//2,(y0+y1)//2),text,fp(_fsz),_data_col,_outline_col,_ow)
+        _tc_outlined(d,((x0+x1)//2,(y0+y1)//2),text,fp(_fsz),_data_col,_outline_col,_ow,
+                     vref=_ref)
 
     if not P.get("style15_layout"):
         # Compact 2×2 grid, bottom-justified to the frame bottom:
@@ -1605,14 +1961,14 @@ def _build_frame_style5(img, d, rpm, throttle, speed, gear,
         _gy0    = _gy1 - _GAP2 - _P_H                 # top row
 
         # LEFT column: Lap (top), Timer (bottom)
-        _plain_panel(_cxL, _gy0, _cxL+_col_w, _gy0+_P_H, f"Lap: {_lap_num}")
-        _plain_panel(_cxL, _gy1, _cxL+_col_w, _gy1+_P_H, timer_str)
+        _plain_panel(_cxL, _gy0, _cxL+_col_w, _gy0+_P_H, f"Lap: {_lap_num}", vref="Lap: 88")
+        _plain_panel(_cxL, _gy1, _cxL+_col_w, _gy1+_P_H, timer_str, vref="8:88.88")
 
         # RIGHT column: Channel A (top), Channel B (bottom) — only if selected
         if len(_chan_cells) >= 1:
-            _plain_panel(_cxR, _gy0, _cxR+_col_w, _gy0+_P_H, _chan_cells[0])
+            _plain_panel(_cxR, _gy0, _cxR+_col_w, _gy0+_P_H, _chan_cells[0], vref=_vmask(_chan_cells[0]))
         if len(_chan_cells) >= 2:
-            _plain_panel(_cxR, _gy1, _cxR+_col_w, _gy1+_P_H, _chan_cells[1])
+            _plain_panel(_cxR, _gy1, _cxR+_col_w, _gy1+_P_H, _chan_cells[1], vref=_vmask(_chan_cells[1]))
 
     return img
 
@@ -1728,7 +2084,7 @@ def _build_frame_style8(img, d, rpm, throttle, speed, gear,
         ("Throttle",f"{int(throttle)}%"),
         ("Brake",  f"{int(brake_pct or 0)}%"),
         ("Lat G",  f"{g_lat:+.2f}"),
-        ("Lon G",  f"{-g_long:+.2f}"),
+        ("Lon G",  f"{g_long:+.2f}"),
         ("Lap",    lap_num),
         (timer_lbl, timer_str),
     ]
@@ -1761,8 +2117,7 @@ def _build_frame_style8(img, d, rpm, throttle, speed, gear,
 
         _fsz=SZ_VAL
         while _fsz>8:
-            _bb=d.textbbox((0,0),value,font=fi(_fsz))
-            if (_bb[2]-_bb[0])<COL_W7-int(6*s): break
+            if _vw(value, fi(_fsz))<COL_W7-int(6*s): break
             _fsz-=1
         _tc_outlined(d,(cx_col,VAL_Y7+_val_h//2),value,fi(_fsz),WHITE,BLACK,OW)
 
@@ -1802,8 +2157,7 @@ def _build_frame_style8(img, d, rpm, throttle, speed, gear,
         # Value below
         _fsz4=SZ_VAL4
         while _fsz4>8:
-            _bb=d.textbbox((0,0),value,font=fi(_fsz4))
-            if (_bb[2]-_bb[0])<COL_W-int(8*s): break
+            if _vw(value, fi(_fsz4))<COL_W-int(8*s): break
             _fsz4-=1
         _tc(d,(X4+COL_W//2, y4+SZ_VAL4//2),value,fi(_fsz4),WHITE)
         y4 += SZ_VAL4 + ROW4
@@ -1916,7 +2270,7 @@ def _build_frame_style7(img, d, rpm, throttle, speed, gear,
         ("Throttle",    f"{int(throttle)}%"),
         ("Brake",       f"{int(brake_pct or 0)}%"),
         ("Lat G",       f"{g_lat:+.2f}"),
-        ("Lon G",       f"{-g_long:+.2f}"),
+        ("Lon G",       f"{g_long:+.2f}"),
         ("Lap",         lap_num),
         (timer_lbl,     timer_str),
     ]
@@ -1975,8 +2329,7 @@ def _build_frame_style7(img, d, rpm, throttle, speed, gear,
         # Value — bold, outlined, fills available column width
         _fsz = SZ_VAL
         while _fsz > 8:
-            _bb = d.textbbox((0,0), value, font=fb(_fsz))
-            if (_bb[2]-_bb[0]) < COL_W - int(6*s): break
+            if _vw(value, fb(_fsz)) < COL_W - int(6*s): break
             _fsz -= 1
         _tc_outlined(d, (cx_col, VAL_Y + _val_h//2), value, fb(_fsz), WHITE, BLACK, OW)
 
@@ -2168,7 +2521,7 @@ def _build_frame_style4(img, d, rpm, throttle, speed, gear,
     draw_row("Throttle", f"{int(throttle)}%")
     draw_row("Brake",    f"{int(brake_pct or 0)}%")
     draw_row("Lat G",    f"{g_lat:+.2f}")
-    draw_row("Lon G",    f"{-g_long:+.2f}")
+    draw_row("Lon G",    f"{g_long:+.2f}")
     draw_row("Lap",      lap_num)
     draw_row(timer_lbl,  timer_str)
 
@@ -2230,7 +2583,7 @@ def _build_frame_style14(img, d, rpm, throttle, speed, gear,
          _norm(trace_brake, 0, 100) if trace_brake else [((brake_pct or 0)/100)]*n),
         ("Lat G", f"{g_lat:+.2f}",           P["purple"],
          _norm(trace_glat, -3, 3) if trace_glat else [0.5]*n),
-        ("Lon G", f"{-g_long:+.2f}",         P["blue"],
+        ("Lon G", f"{g_long:+.2f}",         P["blue"],
          _norm(trace_glong, -3, 3) if trace_glong else [0.5]*n),
     ]
     # Optional channels A/B appended to column 3 (plotted too) when selected
@@ -2263,12 +2616,12 @@ def _build_frame_style14(img, d, rpm, throttle, speed, gear,
             while lf > 7 and d.textbbox((0,0),lbl,font=fc(lf))[2] > bw-INNER*2:
                 lf -= 1
             vf = max(9, int(bh*0.46))
-            while vf > 9 and d.textbbox((0,0),val,font=fb(vf))[2] > bw-INNER*2:
+            while vf > 9 and _vw(val, fb(vf)) > bw-INNER*2:
                 vf -= 1
             d.rounded_rectangle([x0,by0,x1,by1],radius=5,fill=(16,18,26))
             d.rounded_rectangle([x0,by0,x1,by1],radius=5,outline=col,width=2)
             d.text((bx,by0+INNER+lf//2),lbl,font=fc(lf),fill=col,anchor="mm")
-            d.text((bx,by1-INNER-vf//2),val,font=fb(vf),fill=WHITE,anchor="mm")
+            _gtext(d,(bx,by1-INNER-vf//2),val,fb(vf),WHITE,anchor="mm")
 
     # Column-3 panel height (used to size the Lap/Lap Time panels)
     _c3_bh = (PH - PAD*(len(col3)+1)) // len(col3)
@@ -2325,11 +2678,11 @@ def _build_frame_style14(img, d, rpm, throttle, speed, gear,
         lf = _lt_lf
         while lf > 7 and d.textbbox((0,0),lbl,font=fc(lf))[2] > bw-INNER*2: lf -= 1
         vf = _lt_vf
-        while vf > 9 and d.textbbox((0,0),val,font=fb(vf))[2] > bw-INNER*2: vf -= 1
+        while vf > 9 and _vw(val, fb(vf)) > bw-INNER*2: vf -= 1
         d.rounded_rectangle([x0,y0,x1,y1],radius=5,fill=(16,18,26))
         d.rounded_rectangle([x0,y0,x1,y1],radius=5,outline=col,width=2)
         d.text((bx,y0+int(8*s)+lf//2),lbl,font=fc(lf),fill=col,anchor="mm")
-        d.text((bx,y1-int(8*s)-vf//2),val,font=fb(vf),fill=WHITE,anchor="mm")
+        _gtext(d,(bx,y1-int(8*s)-vf//2),val,fb(vf),WHITE,anchor="mm")
 
     _hpanel(_lap_x0, _lt_y0, _lap_x1, _lt_y1,
             "Lap", str(_lap_num) if _lap_num else "—", P["cyan"])
@@ -2379,7 +2732,7 @@ def _build_frame_style20(img, d, rpm, throttle, speed, gear,
          _norm(trace_brake, 0, 100) if trace_brake else [((brake_pct or 0)/100)]*n),
         ("Lat G", f"{g_lat:+.2f}",           G_LAT,
          _norm(trace_glat, -3, 3) if trace_glat else [0.5]*n),
-        ("Lon G", f"{-g_long:+.2f}",         G_LON,
+        ("Lon G", f"{g_long:+.2f}",         G_LON,
          _norm(trace_glong, -3, 3) if trace_glong else [0.5]*n),
     ]
     if chan:
@@ -2415,12 +2768,17 @@ def _build_frame_style20(img, d, rpm, throttle, speed, gear,
         _edges.append(_edges[-1] + _w_)
     _x_at = lambda k: int(round(_edges[k] / _wsum * _w))
 
-    PLT_X0 = PAD;            PLT_X1 = _w - PAD
-    PLT_Y0 = PAD;            PLT_Y1 = ROW_Y0 - PAD
+    # The plot fills the whole area above the panel row, edge to edge: it used to
+    # be inset by PAD on all four sides, which left a magenta frame around it and
+    # a magenta gap above the panels - the only chroma in the frame.
+    PLT_X0 = 0;              PLT_X1 = _w
+    PLT_Y0 = 0;              PLT_Y1 = ROW_Y0
     PLT_W  = PLT_X1 - PLT_X0; PLT_H = PLT_Y1 - PLT_Y0
 
-    d.rounded_rectangle([PLT_X0,PLT_Y0,PLT_X1,PLT_Y1],radius=6,fill=(8,10,14))
-    d.rounded_rectangle([PLT_X0,PLT_Y0,PLT_X1,PLT_Y1],radius=6,outline=(35,40,50),width=1)
+    # Square corners: the plot now meets the frame edges, so rounded ones would
+    # leave four little wedges of chroma.
+    d.rectangle([PLT_X0,PLT_Y0,PLT_X1-1,PLT_Y1-1],fill=(8,10,14))
+    d.rectangle([PLT_X0,PLT_Y0,PLT_X1-1,PLT_Y1-1],outline=(35,40,50),width=1)
     for _gi in range(1, 10):
         _gy = PLT_Y0 + int(PLT_H * _gi / 10)
         _col_g = (90,90,100) if _gi == 5 else (40,44,52)
@@ -2448,9 +2806,9 @@ def _build_frame_style20(img, d, rpm, throttle, speed, gear,
         lf = max(8, int(_row_h*0.24))
         while lf > 8 and d.textbbox((0,0),lbl,font=fc(lf))[2] > bw-INNER*2: lf -= 1
         vf = max(10, int(_row_h*0.42))
-        while vf > 10 and d.textbbox((0,0),val,font=fb(vf))[2] > bw-INNER*2: vf -= 1
+        while vf > 10 and _vw(val, fb(vf)) > bw-INNER*2: vf -= 1
         d.text((bx,ROW_Y0+INNER+lf//2),lbl,font=fc(lf),fill=col,anchor="mm")
-        d.text((bx,ROW_Y1-INNER-vf//2),val,font=fb(vf),fill=WHITE,anchor="mm")
+        _gtext(d,(bx,ROW_Y1-INNER-vf//2),val,fb(vf),WHITE,anchor="mm")
 
     return img
 
@@ -2507,12 +2865,9 @@ def _draw_trapezoid_stack(d, img, cx, cy, r, s, speed, rpm, peak_rpm, ts, laps, 
     x0_L = X_LEFT
     x0_R = X_LEFT + TW + SLOPE + COL_GAP
 
-    def _outlined(pos, txt, font, anchor="lm"):
-        x,y = pos
-        for dx in range(-OW,OW+1):
-            for dy in range(-OW,OW+1):
-                if dx or dy: d.text((x+dx,y+dy),txt,font=font,fill=BLACK,anchor=anchor)
-        d.text(pos, txt, font=font, fill=WHITE, anchor=anchor)
+    def _outlined(pos, txt, font, anchor="lm", slots=None):
+        _gtext(d, pos, txt, font, WHITE, anchor=anchor, outline=BLACK, ow=OW,
+               slots=slots)
 
     def _draw_trap(x0, y0, w, h, slope, label, value):
         poly = [
@@ -2548,27 +2903,24 @@ def _build_frame_style13(img, d, rpm, throttle, speed, gear,
     CHROMA = P["chroma"]
     PAD    = 14
 
-    # Chroma above strip, black strip
-    PH = int(_h * 0.70); PY0 = _h - PH
+    # Dash 5 filled only 73% of the frame width and 79% of its height. Two causes,
+    # both dead space: a square was reserved at the right for a g-trace that now
+    # lives in its own overlay video and is never drawn here, and the band above
+    # the rpm bar was sized as a third of the frame when the bar is all it holds.
+    # The panel now spans the full width and starts just under the bar.
     d.rectangle([0, 0, _w, _h], fill=CHROMA)
 
-    # Right zone: g-trace square, full strip height
-    GG_SZ = PH - PAD * 2
-    GG_X1 = _w - PAD; GG_X0 = GG_X1 - GG_SZ
-    GG_Y0 = PY0 + PAD; GG_Y1 = _h - PAD
-    GG_CX = (GG_X0 + GG_X1) // 2; GG_CY = (GG_Y0 + GG_Y1) // 2
-    GU = GG_SZ // 4
-
-    # ── Pre-compute SW and gear box geometry (needed for speed + rpm bar) ──
-    SW = GG_X0 - 10
-    GW = int(SW * 0.26); GCX = SW // 2
-    GX0 = GCX - GW//2; GX1 = GCX + GW//2
-
-    # ── Heights: compute bar_h first, speed box matches ───────────────────
-    _top_zone_h = PY0 - PAD  # total space above strip
-    _bar_h_pre  = max(12, int(_top_zone_h * 0.30))
+    # ── Top row: rpm bars + speed box. The strip starts directly below it. ──
+    _bar_h_pre = max(12, int(_h * 0.085))
+    PY0 = _bar_h_pre + PAD + PAD // 2
+    PH  = _h - PY0
     SPD_Y1 = PY0 - PAD//2
     SPD_Y0 = SPD_Y1 - _bar_h_pre
+
+    # ── Panel spans the frame; gear box centred in it ──────────────────────
+    SW = _w - PAD
+    GW = int(SW * 0.26); GCX = SW // 2
+    GX0 = GCX - GW//2; GX1 = GCX + GW//2
     SPD_H  = _bar_h_pre
     # Size box to fit exactly 3 digits with padding
     _spd_str = str(int(speed))
@@ -2584,24 +2936,12 @@ def _build_frame_style13(img, d, rpm, throttle, speed, gear,
     _spd_x1   = _spd_cx + _spd_box_w//2
     d.rounded_rectangle([_spd_x0,SPD_Y0,_spd_x1,SPD_Y1], radius=8, fill=(12,12,18))
     d.rounded_rectangle([_spd_x0,SPD_Y0,_spd_x1,SPD_Y1], radius=8, outline=CYAN, width=2)
-    d.text((_spd_cx, (SPD_Y0+SPD_Y1)//2), _spd_str,
-           font=fb(_spd_fsz), fill=WHITE, anchor="mm")
+    _gtext(d, (_spd_cx, (SPD_Y0+SPD_Y1)//2), _spd_str, fb(_spd_fsz), WHITE,
+           anchor="mm", vref=_vmask(_spd_str))
 
     # ── RPM BARS ──────────────────────────────────────────────────────────
     _rpm_pct = min(1.0, rpm / max(rpm_max, 1))
-    # Stepped colour by RPM relative to max (hard steps, not a blend):
-    #   red    ≥ max-500
-    #   orange ≥ max-750
-    #   yellow ≥ max-1000
-    #   green  below that
-    if rpm >= rpm_max - 500:
-        _rpm_col = (220, 40, 40)      # red
-    elif rpm >= rpm_max - 750:
-        _rpm_col = (255, 140, 0)      # orange
-    elif rpm >= rpm_max - 1000:
-        _rpm_col = (240, 210, 0)      # yellow
-    else:
-        _rpm_col = (30, 200, 60)      # green
+    _rpm_col = rpm_stage_colour(rpm, rpm_max, P.get("_redline"))
     _rpm_bg = (15, 20, 15)
     _bar_h  = _bar_h_pre
     _bar_y1 = SPD_Y1
@@ -2652,22 +2992,21 @@ def _build_frame_style13(img, d, rpm, throttle, speed, gear,
         d.rounded_rectangle([x0,y0,x1,y1],radius=radius,fill=fill)
         d.rounded_rectangle([x0,y0,x1,y1],radius=radius,outline=outline,width=stroke)
 
-    def _tc(pos,text,font,fill): d.text(pos,text,font=font,fill=fill,anchor="mm")
+    def _tc(pos,text,font,fill,slots=None):
+        _gtext(d, pos, text, font, fill, anchor="mm", slots=slots)
 
-    def _tco(pos,text,font,fill,outline=BLACK,stroke=3):
-        x,y=pos
-        for dx in range(-stroke,stroke+1):
-            for dy in range(-stroke,stroke+1):
-                if dx or dy: d.text((x+dx,y+dy),text,font=font,fill=outline,anchor="mm")
-        d.text(pos,text,font=font,fill=fill,anchor="mm")
+    def _tco(pos,text,font,fill,outline=BLACK,stroke=3,slots=None):
+        # Digits on a fixed pitch (see _gtext) so a changing value stays put.
+        _gtext(d, pos, text, font, fill, anchor="mm", outline=outline,
+               ow=int(stroke), slots=slots)
 
     # ── GEAR: centre ─────────────────────────────────────────────────────────
     _box(GX0, PY0+PAD, GX1, _h-PAD, AMBER, fill=(20,15,5), radius=16, stroke=5)
     _gear_str = str(gear) if gear > 0 else "N"
     gfsz = int(PH * 0.75)
     while gfsz > 10:
-        _bb = d.textbbox((0,0), _gear_str, font=fb(gfsz))
-        if (_bb[2]-_bb[0]) < GW-PAD*4 and (_bb[3]-_bb[1]) < PH-PAD*2: break
+        _bb = d.textbbox((0,0), _vmask(_gear_str), font=fb(gfsz))
+        if _vw(_gear_str, fb(gfsz)) < GW-PAD*4 and (_bb[3]-_bb[1]) < PH-PAD*2: break
         gfsz -= 2
     # Fit gear number in upper 80% of box, leaving room for label
     _tco((GCX, PY0+PAD+int(((_h-PY0-PAD*2)*0.45))), _gear_str, fb(gfsz), AMBER, BLACK, 5)
@@ -2750,8 +3089,8 @@ def _build_frame_style13(img, d, rpm, throttle, speed, gear,
         midy = by + bar_h // 2
         d.text((RX0+8, midy), lbl, font=fc(lbl_fsz),
                fill=WHITE if pct > 0.35 else col, anchor="lm")
-        d.text((RX1-6, midy), f"{int(pct*100)}%",
-               font=fc(val_fsz), fill=WHITE, anchor="rm")
+        _gtext(d, (RX1-6, midy), f"{int(pct*100)}%", fc(val_fsz), WHITE,
+               anchor="rm", slots="888%")
 
     # ── G-TRACE: under the bars ───────────────────────────────────────────────
     gg_y0 = PY0 + PAD + 2*(bar_h + PAD) + PAD//2
@@ -2776,7 +3115,7 @@ def _build_frame_style13(img, d, rpm, throttle, speed, gear,
     if trace_glat and len(trace_glat) > 1:
         n = len(trace_glat)
         pts = [(max(gg_x0+2, min(gg_x1-2, gcx+int(trace_glat[i]*gu))),
-                max(gg_y0+2, min(gg_y1-2, gcy-int((-trace_glong[i])*gu))))
+                max(gg_y0+2, min(gg_y1-2, gcy-int((trace_glong[i])*gu))))
                for i in range(n)]
         lw = max(3, int(6*s))
         for i in range(n-1):
@@ -2787,7 +3126,7 @@ def _build_frame_style13(img, d, rpm, throttle, speed, gear,
                 col_t = tuple(int(c*alpha) for c in PURPLE)
             d.line([pts[i],pts[i+1]], fill=col_t, width=lw)
     dx = max(gg_x0+4, min(gg_x1-4, gcx+int(g_lat*gu)))
-    dy = max(gg_y0+4, min(gg_y1-4, gcy-int((-g_long)*gu)))
+    dy = max(gg_y0+4, min(gg_y1-4, gcy-int((g_long)*gu)))
     dr = max(4, int(6*s))
     _dot_col2 = _speed_colour_fn(speed) if speed_colour else PURPLE
     d.ellipse([dx-dr,dy-dr,dx+dr,dy+dr], fill=_dot_col2, outline=(120,120,120), width=1)
@@ -2797,10 +3136,10 @@ def _build_frame_style13(img, d, rpm, throttle, speed, gear,
     _half5 = (gg_x1 - gg_x0) // 2
     _wide_panel_text(img, (gg_x0 + (gg_x1-gg_x0)//4, _lbl_cy5),
                      f"Lat {g_lat:+.2f}", _lbl_fsz5, WHITE,
-                     _half5 - int(6*s), ow=max(2,int(3*s)))
+                     _half5 - int(6*s), ow=max(2,int(3*s)), vref="Lat -2.50")
     _wide_panel_text(img, (gg_x0 + (gg_x1-gg_x0)*3//4, _lbl_cy5),
-                     f"Lon {-g_long:+.2f}", _lbl_fsz5, WHITE,
-                     _half5 - int(6*s), ow=max(2,int(3*s)))
+                     f"Lon {g_long:+.2f}", _lbl_fsz5, WHITE,
+                     _half5 - int(6*s), ow=max(2,int(3*s)), vref="Lon -2.50")
 
     return img
 
@@ -2844,24 +3183,16 @@ def _build_frame_style12(img, d, rpm, throttle, speed, gear,
         d.rounded_rectangle([x0,y0,x1,y1], radius=radius, fill=fill)
         d.rounded_rectangle([x0,y0,x1,y1], radius=radius, outline=outline, width=stroke)
 
-    def _tc_mm(pos, text, font, fill):
-        d.text(pos, text, font=font, fill=fill, anchor="mm")
+    def _tc_mm(pos, text, font, fill, slots=None):
+        _gtext(d, pos, text, font, fill, anchor="mm", slots=slots)
 
-    def _tco_mm(pos, text, font, fill, outline=BLACK, stroke=3):
-        x, y = pos
-        for dx2 in range(-stroke, stroke+1):
-            for dy2 in range(-stroke, stroke+1):
-                if dx2 or dy2:
-                    d.text((x+dx2, y+dy2), text, font=font, fill=outline, anchor="mm")
-        d.text(pos, text, font=font, fill=fill, anchor="mm")
+    def _tco_mm(pos, text, font, fill, outline=BLACK, stroke=3, slots=None):
+        _gtext(d, pos, text, font, fill, anchor="mm", outline=outline,
+               ow=int(stroke), slots=slots)
 
-    def _tco_rm(pos, text, font, fill, outline=BLACK, stroke=2):
-        x, y = pos
-        for dx2 in range(-stroke, stroke+1):
-            for dy2 in range(-stroke, stroke+1):
-                if dx2 or dy2:
-                    d.text((x+dx2, y+dy2), text, font=font, fill=outline, anchor="rm")
-        d.text(pos, text, font=font, fill=fill, anchor="rm")
+    def _tco_rm(pos, text, font, fill, outline=BLACK, stroke=2, slots=None):
+        _gtext(d, pos, text, font, fill, anchor="rm", outline=outline,
+               ow=int(stroke), slots=slots)
 
     # ── GEAR + SPEED + RPM: centre column — speed 1/4, gear 1/2, rpm 1/4 ────
     # (Layout width _LAYW and GX0/GX1 computed above with the strip extent.)
@@ -2873,24 +3204,26 @@ def _build_frame_style12(img, d, rpm, throttle, speed, gear,
     _spd_y0 = _full_y0;              _spd_y1 = _spd_y0 + _spd_h
     _gear_y0 = _spd_y1 + PAD;        _gear_y1 = _gear_y0 + _gear_h
     _rpm_y0  = _gear_y1 + PAD;       _rpm_y1  = _full_y1
-    def _ctr_box(x0,y0,x1,y1,col,fill,lbl,lbl_col,val_str,val_col,radius=12,stroke=3):
+    def _ctr_box(x0,y0,x1,y1,col,fill,lbl,lbl_col,val_str,val_col,radius=12,stroke=3,
+                 slots=None):
         _box(x0,y0,x1,y1,col,fill=fill,radius=radius,stroke=stroke)
         bh=y1-y0; bw=x1-x0; bcx=(x0+x1)//2
         lfsz=max(7,int(bh*0.22))
         d.text((x0+PAD,y0+int(bh*0.18)),lbl,font=fc(lfsz),fill=lbl_col,anchor="lm")
+        # Size the value off the RESERVED field, not this frame's digits, so the
+        # font size stays put as the value changes.
         vfsz=max(10,int(bh*0.58))
         while vfsz>8:
-            _bb=d.textbbox((0,0),val_str,font=fb(vfsz))
-            if (_bb[2]-_bb[0])<bw-PAD*3: break
+            if _gwidth(val_str, fb(vfsz), slots) < bw-PAD*3: break
             vfsz-=1
-        for _dx in range(-3,4):
-            for _dy in range(-3,4):
-                if _dx or _dy: d.text((bcx+_dx,y0+int(bh*0.65)+_dy),val_str,font=fb(vfsz),fill=BLACK,anchor="mm")
-        d.text((bcx,y0+int(bh*0.65)),val_str,font=fb(vfsz),fill=val_col,anchor="mm")
-    _ctr_box(GX0,_spd_y0,GX1,_spd_y1, CYAN,(5,18,20),"km/h",CYAN,str(int(speed)),WHITE)
+        _gtext(d,(bcx,y0+int(bh*0.65)),val_str,fb(vfsz),val_col,anchor="mm",
+               outline=BLACK, ow=3, vref=_vmask(str(slots or val_str)), slots=slots)
+    _ctr_box(GX0,_spd_y0,GX1,_spd_y1, CYAN,(5,18,20),"km/h",CYAN,str(int(speed)),WHITE,
+             slots="888")
     _ctr_box(GX0,_gear_y0,GX1,_gear_y1, AMBER,(20,15,5),"GEAR",GREY,
              str(gear) if gear>0 else "N",AMBER,radius=16,stroke=5)
-    _ctr_box(GX0,_rpm_y0,GX1,_rpm_y1, AMBER,(20,10,5),"RPM",AMBER,str(int(rpm)),WHITE)
+    _ctr_box(GX0,_rpm_y0,GX1,_rpm_y1, AMBER,(20,10,5),"RPM",AMBER,str(int(rpm)),WHITE,
+             slots="88888")
 
     # ── LEFT: lap number + lap time stacked ───────────────────────────────────
     LX1 = GX0 - PAD; lh = (PH - PAD*3) // 2; lxc = (PAD + LX1) // 2
@@ -2938,8 +3271,7 @@ def _build_frame_style12(img, d, rpm, throttle, speed, gear,
         vfsz = max(12, int(rh * 0.56))
         # Shrink value to fit
         while vfsz > 10:
-            _bb2 = d.textbbox((0,0), val, font=fb(vfsz))
-            if (_bb2[2]-_bb2[0]) <= (RX1-RX0) - INNER*3: break
+            if _vw(val, fb(vfsz)) <= (RX1-RX0) - INNER*3: break
             vfsz -= 1
         # Label top-left, bold, in channel colour
         for _dx in range(-2,3):
@@ -2953,9 +3285,773 @@ def _build_frame_style12(img, d, rpm, throttle, speed, gear,
 
     return img
 
+import os as _os
+_HUD_BG_CACHE = {}
+
+def _load_hud_bg(name):
+    """Load and cache the HUD backing image (RGBA)."""
+    if name in _HUD_BG_CACHE:
+        return _HUD_BG_CACHE[name]
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    for cand in (_os.path.join(here, "assets", name), _os.path.join(here, name)):
+        if _os.path.exists(cand):
+            im = Image.open(cand).convert("RGBA")
+            _HUD_BG_CACHE[name] = im
+            return im
+    return None
+
+
+# Full-lap track path for the arc dash's mini track map. The app sets this once
+# per render session (lat, lon, speed arrays); the builder reads it if present.
+_TRACK_PATH = {"lat": None, "lon": None, "speed": None}
+
+def set_track_path(lat=None, lon=None, speed=None):
+    _TRACK_PATH["lat"] = lat
+    _TRACK_PATH["lon"] = lon
+    _TRACK_PATH["speed"] = speed
+
+
+def _rpm_arc_colour(frac):
+    """Green→yellow→orange→red by RPM fraction (matches Dash 1/2 gauge scheme)."""
+    f = max(0.0, min(1.0, frac))
+    stops = [(0.00, (30, 200, 60)), (0.55, (180, 220, 0)),
+             (0.75, (255, 165, 0)), (0.90, (255, 80, 0)), (1.00, (220, 15, 15))]
+    for j in range(len(stops) - 1):
+        f0, c0 = stops[j]; f1, c1 = stops[j + 1]
+        if f <= f1:
+            t = 0.0 if f1 == f0 else (f - f0) / (f1 - f0)
+            return tuple(int(c0[k] * (1 - t) + c1[k] * t) for k in range(3))
+    return stops[-1][1]
+
+
+def _draw_arc(d, cx, cy, radius, width, start_deg, sweep_deg, f_from, f_to, col):
+    """Draw an arc band of `width` at `radius`, from fraction f_from..f_to along
+    a sweep that begins at start_deg (measured CCW from east) and proceeds
+    clockwise by sweep_deg. Uses PIL arc (CW, y-down) with angle conversion."""
+    if f_to <= f_from:
+        return
+    box = [cx - radius, cy - radius, cx + radius, cy + radius]
+    a = -(start_deg - f_from * sweep_deg)
+    b = -(start_deg - f_to * sweep_deg)
+    d.arc(box, min(a, b), max(a, b), fill=col, width=max(1, int(width)))
+
+
+def _make_band_pattern(w, h, pattern, s, base=(8, 8, 10), accent=(0, 150, 190)):
+    """Full-frame RGB layer carrying a decorative pattern for the Dash 10 arc's
+    black backing band. Only the band region is later masked in."""
+    import math as _mm
+    lay = Image.new("RGB", (w, h), base)
+    pd = ImageDraw.Draw(lay)
+    if pattern == "hex":
+        R = max(8, int(20 * s)); lw = max(1, int(2 * s))
+        dx = R * (3 ** 0.5); dy = R * 1.5
+        row = 0; y = 0.0
+        while y < h + dy:
+            xoff = 0.0 if row % 2 == 0 else dx / 2.0
+            x = xoff
+            while x < w + dx:
+                pts = [(x + R * _mm.cos(_mm.radians(60 * k + 90)),
+                        y + R * _mm.sin(_mm.radians(60 * k + 90))) for k in range(6)]
+                pd.line(pts + [pts[0]], fill=accent, width=lw)
+                x += dx
+            y += dy; row += 1
+    elif pattern == "carbon":
+        tile = max(6, int(11 * s))
+        c1 = (24, 24, 30); c2 = (12, 12, 16)
+        for gy in range(0, h, tile):
+            for gx in range(0, w, tile):
+                light = ((gx // tile) + (gy // tile)) % 2 == 0
+                pd.rectangle([gx, gy, gx + tile - 1, gy + tile - 1], fill=c1 if light else c2)
+        for k in range(-h, w, tile * 2):
+            pd.line([(k, 0), (k + h, h)], fill=(40, 40, 48), width=1)
+    elif pattern == "diag":
+        gap = max(10, int(16 * s)); lw = max(1, int(2 * s))
+        for k in range(-h, w, gap):
+            pd.line([(k, 0), (k + h, h)], fill=accent, width=lw)
+        for k in range(-h, w, gap * 3):
+            pd.line([(k, 0), (k + h, h)], fill=(230, 240, 250), width=max(1, lw // 2))
+    return lay
+
+
+_BAND_CACHE = {}
+
+
+def _apply_band_pattern(img, ox, oy, r_out, r_in, ang, pattern, s):
+    """Paint `pattern` into the quarter-annulus band (r_in..r_out) of this
+    cluster, masked so it stays within the band.
+
+    The result depends only on geometry, so it is cached — building the gradient
+    and mask every frame cost ~80 ms per frame on Dash 10.
+    """
+    w, h = img.size
+    key = (w, h, int(ox), int(oy), int(r_out), int(r_in), pattern,
+           round(ang(0.0), 2), round(ang(1.0), 2), round(float(s), 3))
+    hit = _BAND_CACHE.get(key)
+    if hit is not None:
+        img.paste(hit[0], (0, 0), hit[1])
+        return
+    mask = Image.new("L", (w, h), 0)
+    md = ImageDraw.Draw(mask)
+    a0 = ang(0.0); a1 = ang(1.0)
+    md.arc([ox - r_out, oy - r_out, ox + r_out, oy + r_out],
+           min(a0, a1), max(a0, a1), fill=255, width=max(1, int(r_out - r_in)))
+    if pattern == "fade":
+        # Dash-8 style radial fade: dark at the inner edge, brightening to a
+        # blue-grey glow near the outer edge where the RPM ticks/numbers sit.
+        yy, xx = np.ogrid[0:h, 0:w]
+        dist = np.sqrt((xx - ox) ** 2 + (yy - oy) ** 2)
+        span = max(1.0, float(r_out - r_in))
+        t = np.clip((dist - r_in) / span, 0.0, 1.0)
+        t = t ** 0.75                        # visible glow that builds toward the ticks
+        base = np.array([6, 6, 9], dtype=float)
+        glow = np.array([78, 90, 120], dtype=float)
+        col = (base[None, None, :] * (1 - t[..., None]) +
+               glow[None, None, :] * t[..., None]).astype(np.uint8)
+        lay = Image.fromarray(col, "RGB")
+    else:
+        lay = _make_band_pattern(w, h, pattern, s)
+    # Crop to the band's bounding box so the cache holds only what is needed
+    if len(_BAND_CACHE) > 8:
+        _BAND_CACHE.clear()
+    _BAND_CACHE[key] = (lay, mask)
+    img.paste(lay, (0, 0), mask)
+
+
+def _build_frame_style32(img, d, rpm, throttle, speed, gear,
+                         g_lat, g_long, ts, trace_glat, trace_glong_raw,
+                         laps, w, h, s, brake_pct, rpm_max, peak_rpm,
+                         trace_speed, speed_colour, P, chan):
+    """Dash 10 Arc: concentric RPM/throttle/brake arc clusters in the bottom
+    corners. A RIGHT cluster (its arc meets the lower + right borders, for
+    right-of-screen placement) and a MIRRORED LEFT cluster (meets the lower +
+    left borders, for left-of-screen placement) are BOTH drawn, with the lap
+    time centred between them. Number/data text stays upright on both sides.
+    Render is chroma-keyed; crop to the side you want in your editor."""
+    import math as _m
+    REF_W, REF_H = 1920, 500
+    # Scale by HEIGHT so the corner arcs fill the full frame height (the frame is
+    # usually taller than the 500px reference), and every element scales up with
+    # it. The arcs are anchored at the bottom corners, so the horizontal extent
+    # (well within the 1920 width) is not the limiting dimension.
+    sx = h / REF_H
+    def SC(v): return int(v * sx)
+
+    R_brk = SC(452); R_thr = SC(414); R_rpm = SC(376)
+    ARC_W = SC(30)
+    trk = P.get("arc_track_col", (60, 62, 70))
+    n_marks = max(1, int(round(rpm_max / 1000.0)))
+    # Throttle concludes at "5", brake at "3.5" on the rpm scale.
+    _thr_end = min(1.0, 5.0 / n_marks)
+    _brk_end = min(1.0, 3.5 / n_marks)
+    _num_fsz = max(14, SC(34))
+    # Black backing band abuts the RPM arc. PIL draws an arc's width INWARD from
+    # the bounding radius, so we set the band's bounding radius to the RPM arc's
+    # inner edge (with a 2px overlap so there is no hairline gap). The band is
+    # made thick enough to hold the numbers centred within it.
+    TICK_W = int(_num_fsz * 2.0)
+    R_tick_outer = R_rpm - ARC_W + SC(2)      # sit on the RPM arc's inner edge
+    R_num = R_tick_outer - TICK_W / 2.0       # number centre, inside the band
+    _rpm_f = max(0.0, min(1.0, rpm / float(rpm_max)))
+    _thr_f = max(0.0, min(1.0, (throttle or 0) / 100.0)) * _thr_end
+    _brk_f = max(0.0, min(1.0, (brake_pct or 0) / 100.0)) * _brk_end
+
+    def _draw_cluster(ox, oy, mirror):
+        """Draw one arc cluster with origin (ox,oy) at a bottom corner. When
+        mirror=True the arc opens toward the bottom-left corner (left placement);
+        otherwise it opens toward the bottom-right corner (right placement).
+        Text glyphs are always drawn upright. Returns the data font size used."""
+        # Angle of scale-fraction f (PIL degrees). Right: 180(west)->270(top).
+        # Left(mirror): 360(east)->270(top). f=0 is the bottom end, f=1 the top.
+        def ang(f):
+            return (360.0 - f * 90.0) if mirror else (180.0 + f * 90.0)
+
+        def _arc(radius, f0, f1, col, width=ARC_W):
+            if f1 <= f0:
+                return
+            box = [ox - radius, oy - radius, ox + radius, oy + radius]
+            a0 = ang(f0); a1 = ang(f1)
+            d.arc(box, min(a0, a1), max(a0, a1), fill=col, width=max(1, int(width)))
+
+        # Inner black backing band that holds the tick numbers (survives keying).
+        _arc(R_tick_outer, 0.0, 1.0, (8, 8, 10), width=TICK_W)
+        # Optional decorative pattern within the band (drawn before the numbers).
+        _band_pat = P.get("arc_band_pattern", "none")
+        if _band_pat and _band_pat != "none":
+            _apply_band_pattern(img, ox, oy, R_tick_outer, R_tick_outer - TICK_W,
+                                 ang, _band_pat, s)
+        # Grey background tracks: RPM spans full arc; throttle/brake stop at max.
+        _arc(R_rpm, 0.0, 1.0, trk)
+        _arc(R_thr, 0.0, _thr_end, trk)
+        _arc(R_brk, 0.0, _brk_end, trk)
+        # Lit portions
+        _arc(R_brk, 0.0, _brk_f, P.get("arc_brk_col", (220, 30, 30)))
+        _arc(R_thr, 0.0, _thr_f, P.get("arc_thr_col", (30, 200, 70)))
+        _arc(R_rpm, 0.0, _rpm_f, _rpm_arc_colour(_rpm_f))
+
+        # Graduation ticks, confined WITHIN the RPM colour band. PIL draws arc
+        # width inward from the bounding radius, so the band spans
+        # [R_rpm - ARC_W, R_rpm]; keep the ticks inside that range.
+        _rpm_inner = R_rpm - ARC_W
+        _rpm_outer = R_rpm
+        _tick_col = (15, 15, 18)
+        _n_minor = n_marks * 2
+        for j in range(0, _n_minor + 1):
+            f = j / float(_n_minor)
+            a = _m.radians(ang(f))
+            ca, sa = _m.cos(a), _m.sin(a)
+            major = (j % 2 == 0)
+            r_in = _rpm_inner if major else (R_rpm - ARC_W * 0.4)
+            r_out = _rpm_outer
+            wd = max(2, int((3 if major else 2) * s))
+            d.line([(ox + r_in * ca, oy + r_in * sa),
+                    (ox + r_out * ca, oy + r_out * sa)], fill=_tick_col, width=wd)
+
+        # RPM numbers 1..n centred on the inner black backing band (upright).
+        # Divisor > n pulls the numbers slightly inside the arc ends so the top
+        # number (redline) sits within the sweep rather than at the terminus.
+        for i in range(1, n_marks + 1):
+            f = i / float(n_marks + 0.6)
+            a = _m.radians(ang(f))
+            lx = ox + R_num * _m.cos(a)
+            ly = oy + R_num * _m.sin(a)
+            _tc_outlined(d, (int(lx), int(ly)), str(i), fp(_num_fsz),
+                         (245, 245, 248), (0, 0, 0), max(1, int(2 * s)), vref="8")
+
+        # (Numeric readouts are drawn outside the cluster so the two mirrored
+        # copies share identical values — see below.)
+
+    # ── Two clusters near the bottom-CENTRE, opening OUTWARD so the peaks
+    #    (redline) meet in the middle of the frame. ─────────────────────────
+    _og = SC(10)
+    _draw_cluster(w // 2 - _og, h, mirror=False)   # LEFT arc (opens outward-left)
+    _draw_cluster(w // 2 + _og, h, mirror=True)    # RIGHT arc (opens outward-right)
+
+    _white = (245, 245, 248); _blk = (0, 0, 0); _ow = max(2, int(3 * s))
+    _big = max(14, SC(38))
+
+    # ── CENTRE (inside the arcs): gear / speed / rpm, one copy per side so a
+    #    cropped half stays complete, vertically centred. ────────────────────
+    _data_rows = [f"GEAR {int(gear) if gear > 0 else 'N'}",
+                  f"{int(speed)} KPH",
+                  f"{int(rpm)} RPM"]
+    _dl_h = int(_big * 1.28)
+    _base_y = h - SC(46)          # common bottom baseline for all bottom text
+    _dgap = SC(16)
+    for _side in (-1, 1):
+        for _k, _t in enumerate(_data_rows):     # bottom-anchored: RPM on baseline
+            _yy = _base_y - (len(_data_rows) - 1 - _k) * _dl_h
+            _wt = _vw(_t, fp(_big))
+            _cx = (w // 2 - _dgap - _wt // 2) if _side < 0 else (w // 2 + _dgap + _wt // 2)
+            _tc_outlined(d, (_cx, _yy), _t, fp(_big), _white, _blk, _ow,
+                         vref=_vmask(_t))
+
+    # ── OUTER edges (outside the arcs): LAP n / lap time + channels, one block
+    #    per side at the bottom corners. ───────────────────────────────────────
+    timer_str, _tcol, _tlbl = get_timer_display(ts, laps, P=P, mmss=True)
+    _lapno = 0
+    if laps:
+        for _i, (_st, _et, _lt) in enumerate(laps):
+            if _st <= ts <= _et:
+                _lapno = _i + 1; break
+        else:
+            _lapno = len(laps) if ts > laps[-1][1] else 1
+    _lap_txt = f"LAP {_lapno}" if _lapno else "LAP -"
+    _o_col1 = [_lap_txt, timer_str]
+    _o_col2 = []
+    for _wk in ("A", "B"):
+        _v = _chan_vstr(chan, _wk) if chan else ""
+        if _v:
+            _o_col2.append(f"{(chan.get(f'{_wk}_lbl') or _wk)} {_v}")
+    _of = max(12, SC(29))
+    def _owt(t): return d.textbbox((0, 0), t, font=fp(_of))[2]
+    _ow1 = max(_owt(t) for t in _o_col1)
+    _ow2 = max([_owt(t) for t in _o_col2], default=0)
+    _ogap = SC(26) if _o_col2 else 0
+    _orow = int(_of * 1.3)
+    _oy1 = h - SC(20); _oy0 = _oy1 - _orow    # corner readouts at the very bottom edge
+    _oow = max(2, int(2 * s))
+    _oedge = SC(16)
+    for _lr in ("L", "R"):
+        # Channels sit at the OUTER edge, LAP/time inner, on BOTH sides. On the
+        # left that means channels first (at the edge), then LAP; on the right,
+        # LAP first (inner) then channels (at the edge).
+        if _lr == "L":
+            _cA, _cB = _o_col2, _o_col1
+        else:
+            _cA, _cB = _o_col1, _o_col2
+        _wA = max([_owt(t) for t in _cA], default=0)
+        _wB = max([_owt(t) for t in _cB], default=0)
+        _tot = _wA + (_ogap if (_cA and _cB) else 0) + _wB
+        _bxA = _oedge if _lr == "L" else (w - _oedge - _tot)
+        _bxB = _bxA + _wA + (_ogap if _cA else 0)
+        for _cx0, _col in ((_bxA, _cA), (_bxB, _cB)):
+            for _ri, _t in enumerate(_col):
+                _yy = _oy0 if _ri == 0 else _oy1
+                _tc_outlined(d, (_cx0 + _owt(_t) // 2, _yy), _t, fp(_of), _white, _blk, _oow)
+
+    # (G-trace removed — now available as an identical standalone widget video.)
+
+    return img
+
+
+def _hud_gauge(img, d, cx, cy, rad, s, value, value_max, peak, P,
+               label_values=None, n_marks=None, caption="RPM",
+               show_shift=True, ts=0.0):
+    """Composite a gauge (RPM- or speed-style) into a circle at (cx,cy) with the
+    given radius, drawing needle + coloured arc + centred digital value + caption.
+    Used by the HUD dashes so RPM and Speed gauges share one implementation."""
+    g_r = int(rad * 0.94)
+    canv = g_r * 2 + 8
+    gbg = _build_gauge_bg(canv // 2, canv // 2, g_r, w=canv, h=canv,
+                          rpm_max=value_max, P=P,
+                          n_marks=n_marks, label_values=label_values).convert("RGB")
+    gbg = _draw_gauge_dynamic(gbg, canv // 2, canv // 2, g_r, value,
+                              rpm_max=value_max, peak_rpm=peak, P=P).convert("RGB")
+    garr = np.array(gbg)
+    rr, gg, bb = garr[:, :, 0].astype(int), garr[:, :, 1].astype(int), garr[:, :, 2].astype(int)
+    Yc, Xc = np.indices((canv, canv))
+    dist = np.sqrt((Xc - canv // 2) ** 2 + (Yc - canv // 2) ** 2)
+    magenta = (rr > 200) & (bb > 200) & (gg < 90)
+    alpha = np.where((dist <= g_r + 1) & (~magenta), 255, 0).astype(np.uint8)
+    gimg = Image.fromarray(np.dstack([garr, alpha]), "RGBA")
+    img.paste(gimg, (cx - canv // 2, cy - canv // 2), gimg)
+
+    # Shift-light flash on the outer ring at/above redline (RPM gauge only)
+    if show_shift and value >= P.get("shift_frac", 0.95) * value_max:
+        if int(ts * 10) % 2 == 0:
+            _fc = P.get("shift_col", (255, 40, 40))
+            _fw = max(4, int(rad * 0.06))
+            d.ellipse([cx - rad, cy - rad, cx + rad, cy + rad], outline=_fc, width=_fw)
+            d.ellipse([cx - rad + _fw, cy - rad + _fw, cx + rad - _fw, cy + rad - _fw],
+                      outline=tuple(int(c * 0.6) for c in _fc), width=max(1, int(_fw * 0.4)))
+
+    # Digital readout in the clear bottom space (below the sub-face, where the
+    # 8→4 o'clock tick gap leaves room). Peak sits ABOVE the live value so the
+    # live number sits clearly outside the centre black circle.
+    _txt_col = P.get("hud_value", (235, 240, 250))
+    _out = P.get("hud_value_outline", (0, 0, 0))
+    _fsz = max(11, int(rad * 0.28))
+    # live value low in the gauge, in the clear gap
+    _val_y = cy + int(rad * 0.68)
+    _tc_outlined(d, (cx, _val_y), str(int(value)),
+                 fp(_fsz), _txt_col, _out, max(1, int(2 * s)), vref="88888")
+    # peak just ABOVE the live value (still below the sub-face)
+    if peak is not None and caption == "RPM":
+        _pk = max(8, int(_fsz * 0.52))
+        _tc_outlined(d, (cx, _val_y - _fsz), f"({int(peak)})",
+                     fp(_pk), P.get("amber", (255, 165, 0)), _out, max(1, int(2 * s)),
+                     vref="(88888)")
+    _cap = max(7, int(rad * 0.12))
+    _tc(d, (cx, cy - int(rad * 0.34)), caption, fc(_cap),
+        P.get("hud_label", (150, 165, 200)))
+
+
+def _hud_gtrace(d, cx, cy, rad, s, g_lat, g_long, trace_glat, trace_glong_raw,
+                trace_speed, speed_colour, speed, P):
+    """Draw the circular G-trace (rings, labels, trail, dot) at (cx,cy)."""
+    g_rad = int(rad * 0.86)
+    grid = P.get("hud_gtrace_grid", (70, 80, 110))
+    cross = P.get("hud_gtrace_cross", (150, 165, 205))
+    dotcol = P.get("hud_gtrace_dot", (40, 160, 255))
+    lblc = P.get("hud_label", (150, 165, 200))
+    # Optional: draw axis markers (rings + crosshair) as solid white lines
+    # (Dash 10), thick enough to survive chroma keying.
+    _outlined_axes = P.get("gtrace_outlined_axes", False)
+    _axis_w = max(12, int(15 * s))
+    GMAX = 2.5
+    def gpix(gx, gy): return (cx + int(gx / GMAX * g_rad), cy - int(gy / GMAX * g_rad))
+    for gv in (1.0, 2.0):
+        rr_ = int(gv / GMAX * g_rad)
+        if _outlined_axes:
+            d.ellipse([cx - rr_, cy - rr_, cx + rr_, cy + rr_], outline=(245, 245, 248), width=_axis_w)
+        else:
+            d.ellipse([cx - rr_, cy - rr_, cx + rr_, cy + rr_], outline=(245, 245, 248), width=max(2, int(2 * s)))
+        _rl = max(8, int(rad * 0.11))
+        # label on the BOTTOM half of each ring, just inside it
+        _tc_outlined(d, (cx + int(rad * 0.10), cy + rr_ - int(_rl * 0.6)),
+                     str(int(gv)), fc(_rl), (245, 245, 248), (0, 0, 0), max(1, int(2 * s)), vref="8")
+    if _outlined_axes:
+        d.line([(cx - g_rad, cy), (cx + g_rad, cy)], fill=(245, 245, 248), width=_axis_w)
+        d.line([(cx, cy - g_rad), (cx, cy + g_rad)], fill=(245, 245, 248), width=_axis_w)
+    else:
+        d.line([(cx - g_rad, cy), (cx + g_rad, cy)], fill=(245, 245, 248), width=max(2, int(2 * s)))
+        d.line([(cx, cy - g_rad), (cx, cy + g_rad)], fill=(245, 245, 248), width=max(2, int(2 * s)))
+    _tlen = 0 if trace_glat is None else len(trace_glat)
+    _use_spd = bool(speed_colour) and trace_speed is not None and len(trace_speed) == _tlen
+    if trace_glat is not None and trace_glong_raw is not None and _tlen > 1:
+        pts = []
+        for i in range(_tlen):
+            gx = float(trace_glat[i]); gy = float(trace_glong_raw[i])
+            px, py = gpix(gx, gy)
+            dxp, dyp = px - cx, py - cy
+            dd = (dxp * dxp + dyp * dyp) ** 0.5
+            if dd > g_rad:
+                px = cx + int(dxp / dd * g_rad); py = cy + int(dyp / dd * g_rad)
+            pts.append((px, py))
+        for i in range(1, len(pts)):
+            a = i / len(pts)
+            base = _speed_colour_fn(float(trace_speed[i])) if _use_spd else dotcol
+            col = tuple(int(c * (0.25 + 0.75 * a)) for c in base)
+            d.line([pts[i - 1], pts[i]], fill=col, width=max(3, int(5 * s)))
+    gx, gy = float(g_lat), float(g_long)
+    dx, dy = gpix(gx, gy)
+    ddx, ddy = dx - cx, dy - cy
+    dd = (ddx * ddx + ddy * ddy) ** 0.5
+    if dd > g_rad:
+        dx = cx + int(ddx / dd * g_rad); dy = cy + int(ddy / dd * g_rad)
+    dr = max(6, int(10 * s))
+    d.ellipse([dx - dr, dy - dr, dx + dr, dy + dr], fill=(230, 30, 30),
+              outline=(255, 255, 255), width=max(2, int(3 * s)))
+
+
+def _hud_data_stacks(d, x0, x1, y_top, y_bot, s, fields, P):
+    """Draw label+value stacks across [x0,x1], bottom area of the panel, with a
+    single uniform font size for all values. Columns are width-proportional to
+    their content so a wide field (e.g. TIMER) doesn't shrink every value."""
+    lbl_col = P.get("hud_label", (150, 165, 200))
+    val_col = P.get("hud_value", (235, 240, 250))
+    val_out = P.get("hud_value_outline", (0, 0, 0))
+    band = y_bot - y_top
+    total_w = x1 - x0
+
+    # Reference widths per field (from value/vref and label) at a probe size, to
+    # split the panel proportionally.
+    probe = 40
+    def _w(txt, fnt): return d.textbbox((0, 0), txt, font=fnt)[2]
+    weights = []
+    for lbl, val, vref in fields:
+        fit = val if len(val) > len(vref) else vref
+        weights.append(max(_w(fit, fp(probe)), _w(lbl, fc(int(probe * 0.6))), 1))
+    wsum = sum(weights)
+    pad = int(total_w * 0.02)
+    # column x-centres and widths
+    cols = []
+    xcur = x0
+    for wgt in weights:
+        cw = (total_w - pad * len(fields)) * (wgt / wsum) + pad
+        cols.append((xcur + cw / 2, cw))
+        xcur += cw
+
+    # Uniform value font: largest that fits every field in its own column.
+    val_fsz = max(14, int(band * 0.60))
+    while val_fsz > 10:
+        ok = True
+        for (cx_i, cw), (lbl, val, vref) in zip(cols, fields):
+            fit = val if len(val) > len(vref) else vref
+            if _w(fit, fp(val_fsz)) > cw * 0.88:
+                ok = False; break
+        if ok:
+            break
+        val_fsz -= 1
+    lbl_fsz = max(9, int(band * 0.28))
+    while lbl_fsz > 8:
+        if all(_w(lbl, fc(lbl_fsz)) <= cw * 0.92 for (cx_i, cw), (lbl, _, _) in zip(cols, fields)):
+            break
+        lbl_fsz -= 1
+
+    lbl_y = y_top + int(lbl_fsz * 0.72)
+    val_y = y_bot - int(val_fsz * 0.58)
+    for (cx_i, cw), (lbl, val, vref) in zip(cols, fields):
+        _tc(d, (int(cx_i), lbl_y), lbl, fc(lbl_fsz), lbl_col)
+        _tc_outlined(d, (int(cx_i), val_y), val, fp(val_fsz), val_col, val_out,
+                     max(1, int(1.5 * s)), vref=vref)
+
+
+def _hud_speed_scale(speed_max):
+    """Return (n_marks, label_values, full_scale) for a speed gauge whose
+    full-scale is speed_max rounded up to the next 10, with ~9 major marks."""
+    fs = int(math.ceil(max(speed_max, 10) / 10.0) * 10)   # nearest 10 above max
+    target = 9
+    step = int(math.ceil((fs / target) / 10.0) * 10)      # step rounded to 10
+    if step < 10: step = 10
+    n = int(math.ceil(fs / step))
+    fs = step * n                                          # whole number of steps
+    labels = [str(step * i) for i in range(1, n + 1)]
+    return n, labels, fs
+
+
+def _build_frame_style31(img, d, rpm, throttle, speed, gear,
+                         g_lat, g_long, ts, trace_glat, trace_glong_raw,
+                         laps, w, h, s, brake_pct, rpm_max, peak_rpm,
+                         trace_speed, speed_colour, speed_max, P, chan):
+    """Dash 9 Triple: RPM gauge, Speed gauge (overlapping, lower), circular
+    G-trace, then Lap / Gear / Timer / Throttle-Brake (+ optional channels)."""
+    REF_W, REF_H = 1392, 294
+    G = dict(rpm=(148, 150), spd=(422, 150), gtr=(696, 150), r=130,
+             data_x0=852, bar_top=184, bar_bot=280)
+
+    bg = _load_hud_bg(P.get("hud_bg", "dash_hud2_bg.png"))
+    scale = w / REF_W
+    if bg is not None:
+        _bs = bg.resize((w, int(REF_H * scale)), Image.LANCZOS)
+        img.paste(_bs, (0, 0), _bs)
+
+    def SX(x): return int(x * scale)
+    def SY(y): return int(y * scale)
+    rad = int(G["r"] * scale)
+    rpm_c = (SX(G["rpm"][0]), SY(G["rpm"][1]))
+    spd_c = (SX(G["spd"][0]), SY(G["spd"][1]))
+    gtr_c = (SX(G["gtr"][0]), SY(G["gtr"][1]))
+
+    _smax = speed_max if speed_max else max(60, int(math.ceil((speed + 20) / 10.0) * 10))
+    _n, _slabels, _sfull = _hud_speed_scale(_smax)
+
+    # SPEED gauge first (sits UNDER the RPM gauge where they overlap)
+    _hud_gauge(img, d, spd_c[0], spd_c[1], rad, s, speed, _sfull, None, P,
+               label_values=_slabels, n_marks=_n, caption="km/h",
+               show_shift=False, ts=ts)
+    # RPM gauge on top
+    _hud_gauge(img, d, rpm_c[0], rpm_c[1], rad, s, rpm, rpm_max, peak_rpm, P,
+               caption="RPM", show_shift=True, ts=ts)
+    # G-trace
+    _hud_gtrace(d, gtr_c[0], gtr_c[1], rad, s, g_lat, g_long,
+                trace_glat, trace_glong_raw, trace_speed, speed_colour, speed, P)
+
+    # Data stacks to the right of the G-trace
+    _gear = "N" if gear <= 0 else str(int(gear))
+    _lap_num = "-"
+    for i, (st, en, pk) in enumerate(laps):
+        if st <= ts <= en:
+            _lap_num = str(i + 1); break
+    timer_str, _tcol, timer_lbl = get_timer_display(ts, laps, P=P, seconds_only=True)
+    # Trim the timer to 1 decimal place (it comes back with 2, e.g. "45.00").
+    if "." in timer_str:
+        _tp = timer_str.split(".")
+        timer_str = _tp[0] + "." + _tp[1][:1]
+    _thr = 0 if throttle is None else int(round(throttle))
+    _brk = 0 if brake_pct is None else int(round(brake_pct))
+    fields = [
+        ("LAP", _lap_num, "88"),
+        (timer_lbl, timer_str, "8:88.8"),
+        ("GEAR", _gear, "8"),
+        ("THR", str(_thr), "888"),
+        ("BRK", str(_brk), "888"),
+    ]
+    chA = chan.get("A_val") if chan else None
+    chB = chan.get("B_val") if chan else None
+    if chA is not None and chA == chA:
+        fields.append(((chan.get("A_lbl") or "CH A")[:6].upper(),
+                       (f"{chA:.0f}" if abs(chA) >= 10 else f"{chA:.1f}") + (chan.get("A_unit") or ""), "8888"))
+    if chB is not None and chB == chB:
+        fields.append(((chan.get("B_lbl") or "CH B")[:6].upper(),
+                       (f"{chB:.0f}" if abs(chB) >= 10 else f"{chB:.1f}") + (chan.get("B_unit") or ""), "8888"))
+
+    _hud_data_stacks(d, SX(G["data_x0"]), w - int(20 * s),
+                     SY(G["bar_top"]), SY(G["bar_bot"]), s, fields, P)
+    return img
+
+
+def _build_frame_style30(img, d, rpm, throttle, speed, gear,
+                         g_lat, g_long, ts, trace_glat, trace_glong_raw,
+                         laps, w, h, s, brake_pct, rpm_max, peak_rpm,
+                         trace_speed, speed_colour, P, chan):
+    """Dash 7 HUD: RPM gauge (left circle), circular G-trace (right circle),
+    and Speed / Gear / Lap / Throttle-Brake as label+value stacks between them.
+
+    The backing image defines the geometry. It is authored at 1536x326 with:
+      left circle  c(122,142) r130 ; right circle c(1381,140) r130
+      bar y[152-315]
+    We scale that reference to the actual render canvas (w,h)."""
+    # Reference geometry (matches assets/dash_hud_bg.png, symmetric)
+    REF_W, REF_H = 1536, 292
+    L = dict(lcx=155, lcy=150, rcx=1381, rcy=150, r=130,
+             bar_top=130, bar_bot=280)
+
+    bg = _load_hud_bg(P.get("hud_bg", "dash_hud_bg.png"))
+    if bg is not None:
+        scale = w / REF_W
+        bw = w
+        bh = int(REF_H * scale)
+        bg_scaled = bg.resize((bw, bh), Image.LANCZOS)
+        img.paste(bg_scaled, (0, 0), bg_scaled)
+    else:
+        scale = w / REF_W
+
+    def SX(x): return int(x * scale)
+    def SY(y): return int(y * scale)
+    lcx, lcy = SX(L["lcx"]), SY(L["lcy"])
+    rcx, rcy = SX(L["rcx"]), SY(L["rcy"])
+    rad      = int(L["r"] * scale)
+    bar_top, bar_bot = SY(L["bar_top"]), SY(L["bar_bot"])
+
+    # ── LEFT CIRCLE: RPM gauge (Dash-2 style), no speed/gear ─────────────────
+    # Render the gauge on its own square canvas, mask to a ring-shaped region so
+    # the needle + coloured ticks show but the magenta canvas is dropped.
+    g_r = int(rad * 0.94)
+    canv = g_r * 2 + 8
+    gbg = _build_gauge_bg(canv // 2, canv // 2, g_r, w=canv, h=canv,
+                          rpm_max=rpm_max, P=P).convert("RGB")
+    gbg = _draw_gauge_dynamic(gbg, canv // 2, canv // 2, g_r, rpm,
+                              rpm_max=rpm_max, peak_rpm=peak_rpm, P=P).convert("RGB")
+    garr = np.array(gbg)
+    rr, gg, bb = garr[:, :, 0].astype(int), garr[:, :, 1].astype(int), garr[:, :, 2].astype(int)
+    Yc, Xc = np.indices((canv, canv))
+    dist = np.sqrt((Xc - canv // 2) ** 2 + (Yc - canv // 2) ** 2)
+    # keep only the true magenta chroma as transparent — everything else (face,
+    # ticks, needle, segment arc) stays visible.
+    magenta = (rr > 200) & (bb > 200) & (gg < 90)
+    alpha = np.where((dist <= g_r + 1) & (~magenta), 255, 0).astype(np.uint8)
+    gimg = Image.fromarray(np.dstack([garr, alpha]), "RGBA")
+    img.paste(gimg, (lcx - canv // 2, lcy - canv // 2), gimg)
+
+    # ── Shift light: flash the outer ring when RPM is at/above the redline ────
+    _shift_thresh = P.get("shift_frac", 0.95)
+    if rpm >= _shift_thresh * rpm_max:
+        _blink = (int(ts * 10) % 2 == 0)     # ~5 Hz, steady across frames
+        if _blink:
+            _flash_col = P.get("shift_col", (255, 40, 40))
+            _fw = max(4, int(rad * 0.06))
+            _fr = rad
+            d.ellipse([lcx - _fr, lcy - _fr, lcx + _fr, lcy + _fr],
+                      outline=_flash_col, width=_fw)
+            d.ellipse([lcx - _fr + _fw, lcy - _fr + _fw,
+                       lcx + _fr - _fw, lcy + _fr - _fw],
+                      outline=tuple(int(c * 0.6) for c in _flash_col),
+                      width=max(1, int(_fw * 0.4)))
+
+    # The gauge (via _draw_gauge_dynamic) renders the needle + coloured segment
+    # arc. RPM/peak text is suppressed there (gauge_no_rpm_text) and drawn here,
+    # lower in the free space below the hub, in the same font as the value text.
+    _rpm_txt_col = P.get("hud_value", (235, 240, 250))
+    _rpm_out = P.get("hud_value_outline", (0, 0, 0))
+    _rpm_fsz = max(11, int(rad * 0.26))
+    _tc_outlined(d, (lcx, lcy + int(rad * 0.44)), str(int(rpm)),
+                 fp(_rpm_fsz), _rpm_txt_col, _rpm_out, max(1, int(2 * s)),
+                 vref="88888")
+    if peak_rpm is not None:
+        _pk_fsz = max(8, int(_rpm_fsz * 0.55))
+        _tc_outlined(d, (lcx, lcy + int(rad * 0.44) + _rpm_fsz),
+                     f"({int(peak_rpm)})", fp(_pk_fsz),
+                     P.get("amber", (255, 165, 0)), _rpm_out, max(1, int(2 * s)),
+                     vref="(88888)")
+    # small "RPM" caption above the hub
+    _cap_fsz = max(7, int(rad * 0.12))
+    _tc(d, (lcx, lcy - int(rad * 0.34)), "RPM", fc(_cap_fsz),
+        P.get("hud_label", (150, 165, 200)))
+
+    # ── RIGHT CIRCLE: circular G-trace (trail + dot + ring labels) ───────────
+    g_rad = int(rad * 0.86)
+    grid = P.get("hud_gtrace_grid", (70, 80, 110))
+    cross = P.get("hud_gtrace_cross", (150, 165, 205))
+    dotcol = P.get("hud_gtrace_dot", (40, 160, 255))
+    lblc = P.get("hud_label", (150, 165, 200))
+    GMAX = 2.5
+    def gpix(gx, gy):
+        return (rcx + int(gx / GMAX * g_rad), rcy - int(gy / GMAX * g_rad))
+    for gv in (1.0, 2.0):
+        rr_ = int(gv / GMAX * g_rad)
+        d.ellipse([rcx - rr_, rcy - rr_, rcx + rr_, rcy + rr_],
+                  outline=grid, width=max(1, int(1.5 * s)))
+        # ring label: number sits just above the ring on the vertical axis
+        _rl_fsz = max(8, int(rad * 0.11))
+        _tc_outlined(d, (rcx + int(rad * 0.10), rcy - rr_ + int(_rl_fsz * 0.1)),
+                     str(int(gv)), fc(_rl_fsz), lblc, (0, 0, 0), 1, vref="8")
+    # crosshair
+    d.line([(rcx - g_rad, rcy), (rcx + g_rad, rcy)], fill=cross, width=max(1, int(1.5 * s)))
+    d.line([(rcx, rcy - g_rad), (rcx, rcy + g_rad)], fill=cross, width=max(1, int(1.5 * s)))
+    # trailing path — speed-coloured when enabled and speed history is present
+    _tlen = 0 if trace_glat is None else len(trace_glat)
+    _use_spd = bool(speed_colour) and trace_speed is not None and len(trace_speed) == _tlen
+    if trace_glat is not None and trace_glong_raw is not None and len(trace_glat) > 1:
+        n = len(trace_glat)
+        pts = []
+        for i in range(n):
+            gx = float(trace_glat[i]); gy = float(trace_glong_raw[i])
+            px, py = gpix(gx, gy)
+            dxp, dyp = px - rcx, py - rcy
+            dd = (dxp * dxp + dyp * dyp) ** 0.5
+            if dd > g_rad:
+                px = rcx + int(dxp / dd * g_rad); py = rcy + int(dyp / dd * g_rad)
+            pts.append((px, py))
+        for i in range(1, len(pts)):
+            a = i / len(pts)                     # newer = brighter
+            if _use_spd:
+                base = _speed_colour_fn(float(trace_speed[i]))
+            else:
+                base = dotcol
+            col = tuple(int(c * (0.25 + 0.75 * a)) for c in base)
+            d.line([pts[i - 1], pts[i]], fill=col, width=max(1, int(2 * s)))
+    # live dot — coloured by current speed when speed-colouring is on
+    gx, gy = float(g_lat), float(g_long)
+    dx, dy = gpix(gx, gy)
+    ddx, ddy = dx - rcx, dy - rcy
+    dd = (ddx * ddx + ddy * ddy) ** 0.5
+    if dd > g_rad:
+        dx = rcx + int(ddx / dd * g_rad); dy = rcy + int(ddy / dd * g_rad)
+    dr = max(4, int(7 * s))
+    _dcol = _speed_colour_fn(float(speed)) if bool(speed_colour) else dotcol
+    d.ellipse([dx - dr, dy - dr, dx + dr, dy + dr], fill=_dcol,
+              outline=(255, 255, 255), width=max(1, int(2 * s)))
+    # G-trace caption
+    _tc(d, (rcx, rcy - int(rad * 0.62)), "G", fc(max(7, int(rad * 0.12))), lblc)
+
+    # ── MIDDLE BAR: label+value stacks (incl. optional channels A/B) ─────────
+    lbl_col = P.get("hud_label", (150, 165, 200))
+    val_col = P.get("hud_value", (235, 240, 250))
+    val_out = P.get("hud_value_outline", (0, 0, 0))
+
+    _gear = "N" if gear <= 0 else str(int(gear))
+    _lap_num = "-"
+    for i, (st, en, pk) in enumerate(laps):
+        if st <= ts <= en:
+            _lap_num = str(i + 1); break
+    timer_str, _tcol, timer_lbl = get_timer_display(ts, laps, P=P, seconds_only=True)
+    _thr = 0 if throttle is None else int(round(throttle))
+    _brk = 0 if brake_pct is None else int(round(brake_pct))
+
+    fields = [
+        ("SPEED", str(int(speed)), "888"),
+        ("GEAR",  _gear,           "8"),
+        ("LAP",   _lap_num,        "88"),
+        (timer_lbl, timer_str,     "8:88.88"),
+        ("THR %", str(_thr),       "888"),
+        ("BRK %", str(_brk),       "888"),
+    ]
+    # Optional channels A/B — only add columns when mapped, so they have space.
+    chA = chan.get("A_val") if chan else None
+    chB = chan.get("B_val") if chan else None
+    if chA is not None and chA == chA:
+        _lblA = (chan.get("A_lbl") or "CH A")[:6].upper()
+        _unitA = chan.get("A_unit") or ""
+        _valA = f"{chA:.0f}" if abs(chA) >= 10 else f"{chA:.1f}"
+        fields.append((_lblA, _valA + _unitA, "8888"))
+    if chB is not None and chB == chB:
+        _lblB = (chan.get("B_lbl") or "CH B")[:6].upper()
+        _unitB = chan.get("B_unit") or ""
+        _valB = f"{chB:.0f}" if abs(chB) >= 10 else f"{chB:.1f}"
+        fields.append((_lblB, _valB + _unitB, "8888"))
+
+    span_x0 = lcx + rad + int(20 * s)
+    span_x1 = rcx - rad - int(20 * s)
+    ncol = len(fields)
+    col_w = (span_x1 - span_x0) / ncol
+    lbl_fsz = max(8, min(int((bar_bot - bar_top) * 0.20), int(col_w * 0.28)))
+    val_fsz_base = max(11, int((bar_bot - bar_top) * 0.40))
+    lbl_y = bar_top + int((bar_bot - bar_top) * 0.30)
+    val_y = bar_top + int((bar_bot - bar_top) * 0.64)
+    _maxw = int(col_w * 0.86)
+    for i, (lbl, val, vref) in enumerate(fields):
+        cxk = int(span_x0 + col_w * (i + 0.5))
+        # shrink label to column width
+        _lf = lbl_fsz
+        while _lf > 7 and d.textbbox((0,0), lbl, font=fc(_lf))[2] > _maxw:
+            _lf -= 1
+        _tc(d, (cxk, lbl_y), lbl, fc(_lf), lbl_col)
+        # shrink value to column width (fit against the value or its vref)
+        _vf = val_fsz_base
+        _fit = val if len(val) > len(vref) else vref
+        while _vf > 9 and _vw(_fit, fp(_vf)) > _maxw:
+            _vf -= 1
+        _tc_outlined(d, (cxk, val_y), val, fp(_vf), val_col, val_out,
+                     max(1, int(1.5 * s)), vref=vref)
+
+    return img
+
+
 def _build_frame_style11(img, d, rpm, throttle, speed, gear,
                           g_lat, g_long, ts, laps, _w, _h, s,
-                          brake_pct, rpm_max, peak_rpm, P, chan=None):
+                          brake_pct, rpm_max, peak_rpm, P, chan=None,
+                          backdrop_colour=None):
     """Style 11 — Race dash v3."""
     import math as _m
     _s15 = P.get("style15_layout", False)   # Dash 3 is never the trapezoid layout
@@ -2964,6 +4060,9 @@ def _build_frame_style11(img, d, rpm, throttle, speed, gear,
     GREY    = P["grey"]
     BAR_COL = P.get("rpm_bar_col", (200, 15, 15))
     BAR_BG  = P.get("rpm_bar_bg",  (25, 10, 10))
+    # Dash 3 is a solid panel filling the whole frame - like Dash 4's strip, but
+    # full size. There is no chroma area, so the backdrop selection must NOT be
+    # painted here: doing so turned the panel itself magenta.
     BLACK   = P["panel"]
     PAD     = int(20*s)
 
@@ -3095,9 +4194,9 @@ def _build_frame_style11(img, d, rpm, throttle, speed, gear,
     _spd_lbl_fsz = max(11, int(23*s))
     _spd_fsz     = max(14, int(BAR_H2 * 0.42))
     _spd_str     = str(int(speed))
+    _spd_fit     = _spd_str if len(_spd_str) > 3 else "888"
     while _spd_fsz > 12:
-        _bb = d.textbbox((0,0), _spd_str, font=fb(_spd_fsz))
-        if (_bb[2]-_bb[0]) < RW - int(12*s): break
+        if _vw(_spd_fit, fb(_spd_fsz)) < RW - int(12*s): break
         _spd_fsz -= 2
     _spd_cx = RX + RW//2
     # Position below the badge area
@@ -3105,22 +4204,22 @@ def _build_frame_style11(img, d, rpm, throttle, speed, gear,
     _spd_avail = BAR_Y1 - _spd_top
     _tc(d, (_spd_cx, _spd_top + int(_spd_avail*0.22)), "km/h", fc(_spd_lbl_fsz), P.get("data",(215,220,230)))
     _spd_num_y = _spd_top + int(_spd_avail*0.22) + _spd_lbl_fsz + int(4*s) + _spd_fsz//2
-    _tc(d, (_spd_cx, _spd_num_y), _spd_str, fb(_spd_fsz), WHITE)
+    _tc(d, (_spd_cx, _spd_num_y), _spd_str, fb(_spd_fsz), WHITE, vref="888")
 
     # ── RPM NUMBER — in zone between bar and data row ─────────────────────────
     if not _s15:
         _rpm_str  = str(int(rpm))
         _rpm_fsz  = max(14, int(RPM_ZONE_H * 0.72))
+        _rpm_fit  = _rpm_str if len(_rpm_str) > 5 else "88888"
         while _rpm_fsz > 12:
-            _bb = d.textbbox((0,0), _rpm_str, font=fb(_rpm_fsz))
-            if (_bb[2]-_bb[0]) < int(_w * 0.35): break
+            if _vw(_rpm_fit, fb(_rpm_fsz)) < int(_w * 0.35): break
             _rpm_fsz -= 2
         _rpm_cx   = int(_w * 0.28)
         _rpm_cy   = RPM_ZONE_Y0 + RPM_ZONE_H//2
-        _tc(d, (_rpm_cx, _rpm_cy), _rpm_str, fb(_rpm_fsz), WHITE)
+        _tc(d, (_rpm_cx, _rpm_cy), _rpm_str, fb(_rpm_fsz), WHITE, vref="88888")
         _rpm_lbl_fsz = max(10, int(_rpm_fsz * 0.32))
-        _rpm_bb = d.textbbox((0,0), _rpm_str, font=fb(_rpm_fsz))
-        _rpm_left = _rpm_cx - (_rpm_bb[2]-_rpm_bb[0])//2 - int(8*s)
+        _rpm_res = _vw("88888", fb(_rpm_fsz))   # reserved field, not this value
+        _rpm_left = _rpm_cx - int(_rpm_res)//2 - int(8*s)
         _rpm_lbl_col = P.get("data", (215, 220, 230))
         _tc(d, (_rpm_left - int(24*s), _rpm_cy), "RPM", fc(_rpm_lbl_fsz), _rpm_lbl_col)
 
@@ -3128,13 +4227,13 @@ def _build_frame_style11(img, d, rpm, throttle, speed, gear,
     if peak_rpm is not None and not _s15:
         _pk_str  = f"({int(peak_rpm)})"
         _pk_fsz  = max(12, int(_rpm_fsz * 0.62))
-        _rpm_right = _rpm_cx + (_rpm_bb[2]-_rpm_bb[0])//2 + int(14*s)
-        _pk_bb = d.textbbox((0,0), _pk_str, font=fi(_pk_fsz))
-        _pk_x  = _rpm_right + (_pk_bb[2]-_pk_bb[0])//2
+        _rpm_right = _rpm_cx + int(_vw("88888", fb(_rpm_fsz)))//2 + int(14*s)
+        _pk_w  = _vw("(88888)", fi(_pk_fsz))       # reserved, so it never shifts
+        _pk_x  = _rpm_right + int(_pk_w)//2
         _pk_col = P.get("amber", (255, 175, 60))   # bright accent for peak
         # Make sure peak doesn't reach speed panel
-        if _pk_x + (_pk_bb[2]-_pk_bb[0])//2 < RX - int(8*s):
-            _tc(d, (_pk_x, _rpm_cy), _pk_str, fi(_pk_fsz), _pk_col)
+        if _pk_x + int(_pk_w)//2 < RX - int(8*s):
+            _tc(d, (_pk_x, _rpm_cy), _pk_str, fi(_pk_fsz), _pk_col, vref="(88888)")
 
     # ── DIVIDER ────────────────────────────────────────────────────────────────
     d.line([(0, DIV_Y), (_w, DIV_Y)], fill=P["border"], width=max(2,int(3*s)))
@@ -3154,7 +4253,7 @@ def _build_frame_style11(img, d, rpm, throttle, speed, gear,
         ("TPS",   f"{int(throttle)}%",          P["green"]),
         ("Brake", f"{int(brake_pct or 0)}%",    P["red"]),
         ("Lat G", f"{g_lat:+.2f}",              WHITE),
-        ("Lon G", f"{-g_long:+.2f}",            WHITE),
+        ("Lon G", f"{g_long:+.2f}",            WHITE),
         ("Gear",  _gear_str,                     P.get("amber",(255,160,0))),  # gear larger below
     ]
     # Optional channels: A below Lon G, B below Lat G (2×2 with the G readouts)
@@ -3199,16 +4298,18 @@ def _build_frame_style11(img, d, rpm, throttle, speed, gear,
             _pct_fsz = max(8, int(DATA_H*0.22))
             _tc(d, (cx2, _by1 + int(6*s) + _pct_fsz//2), val, fc(_pct_fsz), col)
         elif i == 4:  # Gear — as tall as the data row allows
-            # Start at 2× VAL_FSZ, shrink to fit column width and row height
+            # Start at 2× VAL_FSZ, shrink to fit column width and row height.
+            # Size against a fixed-width ref ("8") so a gear change doesn't rescale.
             _gear_fsz = min(VAL_FSZ * 2, int(DATA_H * 0.95))
+            _gear_fit = val if len(val) > 1 else "8"
             while _gear_fsz > 10:
-                _bb = d.textbbox((0,0), val, font=fb(_gear_fsz))
-                _bh = _bb[3]-_bb[1]; _bw = _bb[2]-_bb[0]
+                _bb = d.textbbox((0,0), _vmask(_gear_fit), font=fb(_gear_fsz))
+                _bh = _bb[3]-_bb[1]; _bw = _vw(_gear_fit, fb(_gear_fsz))
                 if _bw < COL_W - int(8*s) and _bh < DATA_H - int(8*s): break
                 _gear_fsz -= 2
             # Centre vertically in the data row
             _gear_cy = DATA_Y0 + DATA_H//2
-            _tc(d, (cx2, _gear_cy), val, fb(_gear_fsz), col)
+            _tc(d, (cx2, _gear_cy), val, fb(_gear_fsz), col, vref="8")
         elif i in (2, 3):  # Lat G / Lon G — with optional channel below (2×2)
             # Channel pairing: B under Lat G (i=2), A under Lon G (i=3)
             _pair = _chanB_cell if i == 2 else _chanA_cell
@@ -3219,14 +4320,12 @@ def _build_frame_style11(img, d, rpm, throttle, speed, gear,
                 _avail = _half_h - _g_lf - int(10*s)
                 _g_vfsz = max(10, min(int(_avail*0.85), VAL_FSZ))
                 while _g_vfsz > 9:
-                    _bb = d.textbbox((0,0), val, font=fb(_g_vfsz))
-                    if (_bb[2]-_bb[0]) < COL_W - int(12*s): break
+                    if _vw(val, fb(_g_vfsz)) < COL_W - int(12*s): break
                     _g_vfsz -= 2
                 _clbl, _cval, _ccol = _pair
                 _c_vfsz = _g_vfsz
                 while _c_vfsz > 9:
-                    _bb = d.textbbox((0,0), _cval, font=fb(_c_vfsz))
-                    if (_bb[2]-_bb[0]) < COL_W - int(12*s): break
+                    if _vw(_cval, fb(_c_vfsz)) < COL_W - int(12*s): break
                     _c_vfsz -= 2
                 # ── Top half: label+value as a tight centred group ──
                 _glabel = lbl.replace(" G", "")   # "Lat"/"Lon" — tighter in split cell
@@ -3234,7 +4333,7 @@ def _build_frame_style11(img, d, rpm, throttle, speed, gear,
                 _grp_h  = _g_lf + _gap_lv + _g_vfsz
                 _grp_y0 = DATA_Y0 + (_half_h - _grp_h)//2
                 _tc(d, (cx2, _grp_y0 + _g_lf//2), _glabel, fc(_g_lf), LBL_COL)
-                _tc(d, (cx2, _grp_y0 + _g_lf + _gap_lv + _g_vfsz//2), val, fb(_g_vfsz), col)
+                _tc(d, (cx2, _grp_y0 + _g_lf + _gap_lv + _g_vfsz//2), val, fb(_g_vfsz), col, vref=_vmask(val))
                 # ── Divider ──
                 d.line([(COL_W*i + int(8*s), DATA_Y0 + _half_h),
                         (COL_W*(i+1) - int(8*s), DATA_Y0 + _half_h)],
@@ -3244,21 +4343,19 @@ def _build_frame_style11(img, d, rpm, throttle, speed, gear,
                 _cgrp_h = _g_lf + _gap_lv + _c_vfsz
                 _cgrp_y0 = _by_top + (_half_h - _cgrp_h)//2
                 _tc(d, (cx2, _cgrp_y0 + _g_lf//2), _clbl, fc(_g_lf), _ccol)
-                _tc(d, (cx2, _cgrp_y0 + _g_lf + _gap_lv + _c_vfsz//2), _cval, fb(_c_vfsz), _ccol)
+                _tc(d, (cx2, _cgrp_y0 + _g_lf + _gap_lv + _c_vfsz//2), _cval, fb(_c_vfsz), _ccol, vref=_vmask(_cval))
             else:
                 _vfsz = VAL_FSZ
                 while _vfsz > 10:
-                    _bb = d.textbbox((0,0), val, font=fb(_vfsz))
-                    if (_bb[2]-_bb[0]) < COL_W - int(12*s): break
+                    if _vw(val, fb(_vfsz)) < COL_W - int(12*s): break
                     _vfsz -= 2
-                _tc(d, (cx2, _val_cy), val, fb(_vfsz), col)
+                _tc(d, (cx2, _val_cy), val, fb(_vfsz), col, vref=_vmask(val))
         else:
             _vfsz = VAL_FSZ
             while _vfsz > 10:
-                _bb = d.textbbox((0,0), val, font=fb(_vfsz))
-                if (_bb[2]-_bb[0]) < COL_W - int(12*s): break
+                if _vw(val, fb(_vfsz)) < COL_W - int(12*s): break
                 _vfsz -= 2
-            _tc(d, (cx2, _val_cy), val, fb(_vfsz), col)
+            _tc(d, (cx2, _val_cy), val, fb(_vfsz), col, vref=_vmask(val))
         if i > 0:
             d.line([(COL_W*i, DIV_Y+int(4*s)), (COL_W*i, _h)],
                    fill=P["border"], width=max(1,int(1*s)))
@@ -3569,8 +4666,13 @@ def build_frame(rpm, throttle, speed, gear, g_lat, g_long, ts,
                 peak_rpm=None, trace_speed=None, speed_colour=False, P=None,
                 trace_throttle=None, trace_brake=None, trace_gear=None,
                 chanA=None, chanA_label="", chanB=None, chanB_label="",
-                chanA_unit="", chanB_unit=""):
+                chanA_unit="", chanB_unit="", speed_max=None, backdrop_colour=None,
+                redline=None):
     P = P or STYLES["Style 5"]
+    if redline:
+        # Style builders receive P but not every argument; the redline rides along
+        # on a copy so nothing mutates the shared style dict.
+        P = dict(P); P["_redline"] = float(redline)
     # Stash optional extra channels so individual style builders can read them
     _CHAN = {"A_val": chanA, "A_lbl": chanA_label or "", "A_unit": chanA_unit or "",
              "B_val": chanB, "B_lbl": chanB_label or "", "B_unit": chanB_unit or ""}
@@ -3581,7 +4683,10 @@ def build_frame(rpm, throttle, speed, gear, g_lat, g_long, ts,
 
     # ── Style 16/17: Dash 8 circular telemetry gauge ──────────────────────────
     if P.get("dash8_layout") and _dash8 is not None:
-        _bg = _dash8_get_bg(P.get("dash8_chroma", False), rpm_max=rpm_max)
+        if backdrop_colour is not None:
+            _bg = _dash8_bg_for(backdrop_colour, rpm_max=rpm_max)
+        else:
+            _bg = _dash8_get_bg(P.get("dash8_chroma", False), rpm_max=rpm_max)
         timer_str, _tcol, _tlbl = get_timer_display(ts, laps, P=P)
         _lapno = 1
         if laps:
@@ -3604,7 +4709,8 @@ def build_frame(rpm, throttle, speed, gear, g_lat, g_long, ts,
             chanA=_CHAN["A_val"], chanA_label=_CHAN["A_lbl"],
             chanB=_CHAN["B_val"], chanB_label=_CHAN["B_lbl"],
             chanA_unit=_CHAN.get("A_unit",""), chanB_unit=_CHAN.get("B_unit",""),
-            bars_inside=P.get("dash8_bars_inside", False))
+            bars_inside=P.get("dash8_bars_inside", False),
+            ring_colour=rpm_stage_colour(rpm, rpm_max, redline))
         if (_img.width, _img.height) != (_w, _h):
             _img = _img.resize((_w, _h), Image.LANCZOS)
         return _img.convert("RGB")
@@ -3615,6 +4721,33 @@ def build_frame(rpm, throttle, speed, gear, g_lat, g_long, ts,
     _cy = cy or _h//2
     _r  = radius or GS//2 - int(12*s)
 
+
+    # Style 30: Dash 7 HUD — RPM gauge left, G-trace right, labels between
+    if P.get("style30_layout"):
+        img = Image.new("RGB", (_w, _h), P.get("chroma", (255, 0, 255)))
+        d   = ImageDraw.Draw(img)
+        return _build_frame_style30(img, d, rpm, throttle, speed, gear,
+                                    g_lat, g_long, ts, trace_glat, trace_glong_raw,
+                                    laps, _w, _h, s, brake_pct, rpm_max, peak_rpm,
+                                    trace_speed, speed_colour, P, _CHAN)
+
+    # Style 32: Dash 10 Arc — concentric arcs, no background
+    if P.get("style32_layout"):
+        img = Image.new("RGB", (_w, _h), P.get("chroma", (255, 0, 255)))
+        d   = ImageDraw.Draw(img)
+        return _build_frame_style32(img, d, rpm, throttle, speed, gear,
+                                    g_lat, g_long, ts, trace_glat, trace_glong_raw,
+                                    laps, _w, _h, s, brake_pct, rpm_max, peak_rpm,
+                                    trace_speed, speed_colour, P, _CHAN)
+
+    # Style 31: Dash 9 Triple — RPM + Speed gauges, G-trace, data
+    if P.get("style31_layout"):
+        img = Image.new("RGB", (_w, _h), P.get("chroma", (255, 0, 255)))
+        d   = ImageDraw.Draw(img)
+        return _build_frame_style31(img, d, rpm, throttle, speed, gear,
+                                    g_lat, g_long, ts, trace_glat, trace_glong_raw,
+                                    laps, _w, _h, s, brake_pct, rpm_max, peak_rpm,
+                                    trace_speed, speed_colour, speed_max, P, _CHAN)
 
     # Style 14: time-trail data panel
     if P.get("style14_layout"):
@@ -3659,11 +4792,13 @@ def build_frame(rpm, throttle, speed, gear, g_lat, g_long, ts,
 
     # Style 11: full-frame race dash — skip gauge entirely
     if P.get("style11_layout"):
-        img = Image.new("RGB", (_w, _h), P["panel"])
+        img = Image.new("RGB", (_w, _h),
+                        backdrop_colour if backdrop_colour is not None else P["panel"])
         d   = ImageDraw.Draw(img)
         return _build_frame_style11(img, d, rpm, throttle, speed, gear,
                                     g_lat, g_long, ts, laps, _w, _h, s,
-                                    brake_pct, rpm_max, peak_rpm, P, _CHAN)
+                                    brake_pct, rpm_max, peak_rpm, P, _CHAN,
+                                    backdrop_colour=backdrop_colour)
 
     # Styles 4, 7, 8 are full-frame chroma overlays — skip gauge rendering
     if P.get("style4_layout") or P.get("style7_layout") or P.get("style8_layout"):
@@ -3793,28 +4928,30 @@ def build_frame(rpm, throttle, speed, gear, g_lat, g_long, ts,
     _accent_col = P.get("accent_line", P.get("cyan", (200,200,200)))
     _data_col = P.get("data", P["white"])  # same colour for all values
     _box_data = [
-        (_lap_num,                          _data_col, "LAP"),
-        (timer_str,                         _data_col, timer_lbl),
-        (f"{int(speed)}",                   _data_col, "km/h"),
-        (str(gear) if gear>0 else "N",      _data_col, "GEAR"),
+        (_lap_num,                          _data_col, "LAP",      "88"),
+        (timer_str,                         _data_col, timer_lbl,  "0:00.0"),
+        (f"{int(speed)}",                   _data_col, "km/h",     "888"),
+        (str(gear) if gear>0 else "N",      _data_col, "GEAR",     "8"),
     ]
     _max_fsz = int(80*s)
     _margin  = int(14*s)
     _outline_col = P.get("dark", (8,8,14))
     _ow = max(1, int(2*s))
     _lbl_fnt = fc(max(10, int(20*s)))   # larger label font
-    for i, (val, col, lbl) in enumerate(_box_data):
+    for i, (val, col, lbl, vref) in enumerate(_box_data):
         by = BAR_Y + (3-i)*(BOX_H+GAP)
         _draw_aim_box(SG_X, by, SG_X+BOX_W, by+BOX_H, _accent_col)
-        # Value
+        # Value — size the font against the widest expected string for this box
+        # (vref) so it doesn't rescale frame-to-frame as the value changes.
         _fsz = _max_fsz
+        _fit_ref = val if len(val) > len(vref) else vref
         while _fsz > 8:
-            _bb = d.textbbox((0,0), val, font=fc(_fsz))
+            _bb = d.textbbox((0,0), _fit_ref, font=fc(_fsz))
             if (_bb[2]-_bb[0]) < BOX_W - _margin:
                 break
             _fsz -= 1
         _tc_outlined(d, (SG_X+BOX_W//2, by + (BOX_H-_LBL_H)//2),
-                     val, fc(_fsz), col, _outline_col, _ow)
+                     val, fc(_fsz), col, _outline_col, _ow, vref=vref)
         # Label band — use data colour so Style 2 gets dark text on light strip
         _lbl_text_col = P.get("data", (255,255,255))
         _tc_outlined(d, (SG_X+BOX_W//2, by+BOX_H-_LBL_H//2),
@@ -3870,7 +5007,7 @@ def build_frame(rpm, throttle, speed, gear, g_lat, g_long, ts,
     _live_y   = GG_Y + GG_SZ - int(22*s)
     _pad_x    = int(6*s); _pad_y = int(4*s)
     for _txt, _tx in [(f"Lat {g_lat:+.2f}G", GG_X + GG_SZ//4),
-                       (f"Lon {-g_long:+.2f}G", GG_X + GG_SZ*3//4)]:
+                       (f"Lon {g_long:+.2f}G", GG_X + GG_SZ*3//4)]:
         _bb = d.textbbox((0,0), _txt, font=_fnt_g)
         _tw = _bb[2]-_bb[0]; _th = _bb[3]-_bb[1]
         # Draw panel-coloured backing rectangle
@@ -3919,7 +5056,7 @@ def build_frame(rpm, throttle, speed, gear, g_lat, g_long, ts,
 
     # Current dot
     dx = mx + int(g_lat * GU)
-    dy = my + int(g_long * GU)   # note: raw g_long, braking negative = up on screen   # note: raw g_long, braking negative=up on screen
+    dy = my - int(g_long * GU)   # accel up (matches the trail and the standalone G-plot)
     dx = max(GG_X+5, min(GG_X+GG_SZ-5, dx))
     dy = max(GG_Y+5, min(GG_Y+GG_SZ-5, dy))
     dr = max(6, int(11*s))
@@ -3939,7 +5076,8 @@ def render_video(rows, t_start, t_end, output_path, fps,
                  precomputed_laps=None,
                  delta_ref=None,
                  chanA_label="", chanB_label="",
-                 chanA_unit="", chanB_unit=""):
+                 chanA_unit="", chanB_unit="",
+                 backdrop_colour=None, crop_to_content=False):
     try:
         import pandas as pd
         print(f"render_video: delta_ref={delta_ref is not None}", flush=True)
@@ -3969,6 +5107,15 @@ def render_video(rows, t_start, t_end, output_path, fps,
             segment['brake'] = np.nan
 
         P = STYLES.get(style, STYLES["Style 5"])
+
+        # Master backdrop: recolour the hard-coded magenta chroma to the chosen
+        # background/key colour (magenta default = no change).
+        if backdrop_colour is not None and tuple(backdrop_colour) != (255, 0, 255):
+            P = dict(P)
+            for _k, _v in list(P.items()):
+                if (isinstance(_v, tuple) and len(_v) >= 3
+                        and _v[0] == 255 and _v[1] == 0 and _v[2] == 255):
+                    P[_k] = tuple(backdrop_colour) + tuple(_v[3:])
 
         # Detect laps from FULL dataset so mid-session renders still get correct timer
         if precomputed_laps:
@@ -4008,77 +5155,160 @@ def render_video(rows, t_start, t_end, output_path, fps,
 
         N    = len(segment)
 
-        # Resolve output dimensions
+        # Resolve output dimensions. Normally the height follows the width by the
+        # base aspect, but a caller may request a WIDER-than-normal frame (e.g.
+        # Dash 10 needs side margins for the corner readouts) by passing an
+        # explicit height smaller than the natural one — honour it and take the
+        # drawing scale from the height instead.
         out_w, out_h = resolution
-        scale = out_w / W_VID
+        _nat_h = int(H_VID * (out_w / W_VID))
+        if out_h and out_h < _nat_h - 2:
+            out_h_actual = int(out_h)
+            scale = out_h_actual / H_VID
+        else:
+            scale = out_w / W_VID
+            out_h_actual = int(H_VID * scale)
 
         # Detect peak RPM and set gauge scale to nearest 1000 above
         peak_rpm = float(segment['rpm'].max())
         import math as _math
         rpm_max  = int(_math.ceil(peak_rpm / 1000) * 1000)
         rpm_max  = max(rpm_max, 6000)   # minimum sensible scale
-        print(f"Peak RPM: {peak_rpm:.0f}  →  Gauge scale: 0-{rpm_max}", flush=True)
+        # Shift-light bands are referenced to the redline, computed once for the
+        # whole render so the colours cannot drift between frames.
+        _redline = auto_redline(rows['rpm'].to_numpy() if 'rpm' in rows.columns
+                               else segment['rpm'].values)
+        if _redline:
+            # The gauge scale comes from the clip but the redline from the whole
+            # session, so a quiet clip could leave the needle pegged below a
+            # redline the scale did not even reach. Keep the redline on the dial.
+            rpm_max = max(rpm_max, int(_math.ceil(_redline / 1000.0) * 1000))
+        print(f"Peak RPM: {peak_rpm:.0f}  →  Gauge scale: 0-{rpm_max}"
+              + (f"  ·  redline {int(_redline)} "
+                 f"(yellow {int(RPM_BAND_YELLOW*_redline)} / "
+                 f"orange {int(RPM_BAND_ORANGE*_redline)} / "
+                 f"red {int(RPM_BAND_RED*_redline)})" if _redline else ""),
+              flush=True)
+
+        # Fixed speed-gauge scale for the whole render. Without this the gauge
+        # was rescaled from the CURRENT speed on every frame, so it appeared to
+        # zoom in and out (Dash 9 / Dash 7 speed dial).
+        try:
+            _peak_spd = float(np.nanmax(pd.to_numeric(rows['speed'], errors='coerce')))
+        except Exception:
+            _peak_spd = 0.0
+        speed_max_fixed = max(60, int(_math.ceil(max(_peak_spd, 0.0) / 10.0) * 10))
+        print(f"Peak speed: {_peak_spd:.0f}  →  Speed scale: 0-{speed_max_fixed}", flush=True)
 
         # Pre-build static gauge background once (scaled, with correct rpm_max).
         # Dash 8 family builds its own background internally — skip here.
         GS  = int(460 * scale); GX = int(10 * scale)
-        cx  = GX + GS//2; cy = int(H_VID * scale)//2
+        cx  = GX + GS//2; cy = out_h_actual//2
         r   = GS//2 - int(12 * scale)
         if P.get("dash8_layout"):
             gauge_bg = None
         else:
-            gauge_bg = _build_gauge_bg(cx, cy, r, w=out_w, h=int(H_VID*scale), rpm_max=rpm_max, P=P)
-
-        out_h_actual = int(H_VID * scale)
+            gauge_bg = _build_gauge_bg(cx, cy, r, w=out_w, h=out_h_actual, rpm_max=rpm_max, P=P)
         ffmpeg_exe = get_ffmpeg_path()
+        _crop = None
+        _ff_w, _ff_h = out_w, out_h_actual
+        if crop_to_content and style_can_crop(P):
+            # Crop the output down to the panel so the result needs no chroma
+            # keying. The rect is taken from frames sampled across the whole
+            # segment and then fixed, so every frame is the same size.
+            _chroma = backdrop_colour if backdrop_colour is not None else P.get("chroma", (255, 0, 255))
+            _samples = []
+            _idxs = np.unique(np.linspace(0, max(0, len(segment) - 1), 6).astype(int))
+            for _si in _idxs:
+                try:
+                    _r0 = segment.iloc[int(_si)]
+                    _samples.append(build_frame(
+                        float(_r0.get('rpm', 0.0)), float(_r0.get('throttle', 0.0)),
+                        float(_r0.get('speed', 0.0)), int(_r0.get('gear', 0) or 0),
+                        float(_r0.get('g_lat', 0.0)), float(_r0.get('g_long', 0.0)),
+                        float(_r0['ts']), [0.0], [0.0], laps, gauge_bg, cx, cy, r,
+                        w=out_w, h=out_h_actual, scale=scale,
+                        brake_pct=float(_r0.get('brake', 0.0) or 0.0),
+                        rpm_max=rpm_max, peak_rpm=None, P=P,
+                        chanA_label=chanA_label, chanB_label=chanB_label,
+                        chanA_unit=chanA_unit, chanB_unit=chanB_unit,
+                        backdrop_colour=backdrop_colour))
+                except Exception:
+                    pass
+            _crop = content_crop_rect(_samples, _chroma) if _samples else None
+            if _crop:
+                _ff_w, _ff_h = _crop[2] - _crop[0], _crop[3] - _crop[1]
+                print(f"[render] cropped to panel: {_ff_w}x{_ff_h} "
+                      f"(from {out_w}x{out_h_actual}) - no chroma key needed",
+                      flush=True)
         cmd = [ffmpeg_exe, "-y",
                "-f","rawvideo","-vcodec","rawvideo",
-               "-s",f"{out_w}x{out_h_actual}","-pix_fmt","rgb24",
+               "-s",f"{_ff_w}x{_ff_h}","-pix_fmt","rgb24",
                "-r",str(fps),"-i","pipe:0",
                "-c:v","libx264","-preset","fast",
                "-crf","18","-pix_fmt","yuv420p",
                output_path]
         ff = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
-        # Pre-build RPM array for fast 1s rolling peak lookup
-        _seg_ts  = segment['ts'].values
-        _seg_rpm = segment['rpm'].values
+        # ── Pre-extract every channel as a plain numpy array ─────────────────
+        # Per-frame boolean masks over the whole segment plus a pandas row/frame
+        # copy made rendering O(rows x frames): with a 77k-row AIM session that
+        # is billions of operations. searchsorted + slicing is O(log n + window).
+        _seg_ts  = np.ascontiguousarray(segment['ts'].values, dtype=np.float64)
+        def _col(name, default=np.nan):
+            if name in segment.columns:
+                return np.ascontiguousarray(segment[name].values, dtype=np.float64)
+            return np.full(len(_seg_ts), default, dtype=np.float64)
+        _seg_rpm   = _col('rpm', 0.0)
+        _seg_thr   = _col('throttle', 0.0)
+        _seg_spd   = _col('speed', 0.0)
+        _seg_gear  = _col('gear', 0.0)
+        _seg_glat  = _col('g_lat', 0.0)
+        _seg_glong = _col('g_long', 0.0)
+        _seg_brk   = _col('brake')
+        _seg_chA   = _col('chanA')
+        _seg_chB   = _col('chanB')
+        _has_brake = 'brake' in segment.columns
+        _has_thr   = 'throttle' in segment.columns
+        _has_gear  = 'gear' in segment.columns
 
         # ── Parallel render: build frames in thread pool, write in order ────────
         import concurrent.futures as _cf
         _N_WORKERS = min(4, max(1, __import__('os').cpu_count() - 1))
 
         def _build_one(args):
-            _i, _row = args
-            _t_now    = float(_row['ts'])
-            _cur_gear = int(_row['gear'])
-            _cur_rpm  = float(_row['rpm'])
-            _peak_mask = (_seg_ts >= _t_now - 1.5) & (_seg_ts <= _t_now)
-            _shown_pk  = int(_seg_rpm[_peak_mask].max()) if _peak_mask.any() else None
-            _tr_mask   = (segment['ts'] >= _t_now - g_trail_secs) & (segment['ts'] <= _t_now)
-            _tr        = segment[_tr_mask]
-            _bv = _row['brake'] if 'brake' in _row.index else float('nan')
-            _bval = 0.0 if (not isinstance(_bv, float) or np.isnan(_bv)) else float(np.clip(_bv, 0, 100))
-            # Optional extra channels (NaN sentinel when not selected)
-            _chA = float(_row['chanA']) if 'chanA' in _row.index else float('nan')
-            _chB = float(_row['chanB']) if 'chanB' in _row.index else float('nan')
+            _i = args if isinstance(args, int) else args[0]
+            _t_now    = float(_seg_ts[_i])
+            _cur_gear = int(_seg_gear[_i]) if _has_gear else 0
+            _cur_rpm  = float(_seg_rpm[_i])
+            # Window bounds by binary search instead of a full-array mask
+            _hi = _i + 1
+            _p0 = int(np.searchsorted(_seg_ts, _t_now - 1.5, side='left'))
+            _shown_pk = int(_seg_rpm[_p0:_hi].max()) if _hi > _p0 else None
+            _lo = int(np.searchsorted(_seg_ts, _t_now - g_trail_secs, side='left'))
+            _bv = _seg_brk[_i] if _has_brake else float('nan')
+            _bval = 0.0 if not np.isfinite(_bv) else float(np.clip(_bv, 0, 100))
+            _chA = float(_seg_chA[_i])
+            _chB = float(_seg_chB[_i])
             _img = build_frame(
-                _cur_rpm, float(_row['throttle']), float(_row['speed']),
-                _cur_gear, float(_row['g_lat']), float(_row['g_long']),
+                _cur_rpm, float(_seg_thr[_i]), float(_seg_spd[_i]),
+                _cur_gear, float(_seg_glat[_i]), float(_seg_glong[_i]),
                 _t_now,
-                _tr['g_lat'].tolist(), _tr['g_long'].tolist(),
+                _seg_glat[_lo:_hi].tolist(), _seg_glong[_lo:_hi].tolist(),
                 laps, gauge_bg, cx, cy, r,
                 w=out_w, h=out_h_actual, scale=scale,
                 brake_pct=_bval, rpm_max=rpm_max,
                 peak_rpm=_shown_pk,
-                trace_speed=_tr['speed'].tolist() if speed_colour else None,
+                trace_speed=_seg_spd[_lo:_hi].tolist() if speed_colour else None,
                 speed_colour=speed_colour, P=P,
-                trace_throttle=_tr['throttle'].tolist() if 'throttle' in _tr.columns else None,
-                trace_brake=_tr['brake'].tolist() if 'brake' in _tr.columns else None,
-                trace_gear=_tr['gear'].tolist() if 'gear' in _tr.columns else None,
+                trace_throttle=_seg_thr[_lo:_hi].tolist() if _has_thr else None,
+                trace_brake=_seg_brk[_lo:_hi].tolist() if _has_brake else None,
+                trace_gear=_seg_gear[_lo:_hi].tolist() if _has_gear else None,
                 chanA=_chA, chanA_label=chanA_label,
                 chanB=_chB, chanB_label=chanB_label,
-                chanA_unit=chanA_unit, chanB_unit=chanB_unit)
+                chanA_unit=chanA_unit, chanB_unit=chanB_unit,
+                speed_max=speed_max_fixed,
+                backdrop_colour=backdrop_colour, redline=_redline)
             # Draw delta widget if enabled
             if delta_ref is not None:
                 from PIL import ImageDraw as _IDrw
@@ -4091,10 +5321,16 @@ def render_video(rows, t_start, t_end, output_path, fps,
                     _t_now, laps, delta_ref,
                     delta_ref["full_ts"],
                     s=scale)
+                if _crop is not None:
+                    _dimg = _dimg.crop(_crop)
                 return _i, _dimg.tobytes()
+            if _crop is not None:
+                _img = _img.crop(_crop)
             return _i, _img.tobytes() if _img.mode == 'RGB' else _img.convert('RGB').tobytes()
 
-        _rows_list = list(segment.iterrows())
+        # Frame list is just indices — segment.iterrows() built a pandas Series
+        # per frame, which is slow and unnecessary now that we slice arrays.
+        _rows_list = range(len(_seg_ts))
         _LOOKAHEAD = _N_WORKERS * 3   # keep this many frames in flight
 
         with _cf.ThreadPoolExecutor(max_workers=_N_WORKERS) as _pool:
@@ -4107,7 +5343,15 @@ def render_video(rows, t_start, t_end, output_path, fps,
                 _in_flight.append(_pool.submit(_build_one, _rows_list[_submitted]))
                 _submitted += 1
 
+            import time as _tmod
+            _t_start_render = _tmod.time()
             for _i in range(len(_rows_list)):
+                if _i and _i % 250 == 0:
+                    _el = _tmod.time() - _t_start_render
+                    _fps_now = _i / max(_el, 1e-9)
+                    _eta = (len(_rows_list) - _i) / max(_fps_now, 1e-9)
+                    print(f"[render] {_i}/{len(_rows_list)} frames  "
+                          f"{_fps_now:5.1f} fps  ETA {_eta/60:4.1f} min", flush=True)
                 if cancel_check and cancel_check():
                     ff.stdin.close(); ff.wait()
                     try: os.remove(output_path)
