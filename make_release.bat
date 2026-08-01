@@ -21,6 +21,13 @@ REM ===========================================================================
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
+REM  Every stop-and-wait goes through %HOLD% so the run can be logged to a file:
+REM      make_release.bat 1.2.0 > build.log 2>&1
+REM  with LAPSTUDIO_NOPAUSE=1 set, which is the only way to capture a failure you
+REM  cannot screenshot. A bare `pause` waits on a prompt you cannot see.
+set HOLD=pause
+if defined LAPSTUDIO_NOPAUSE set HOLD=rem
+
 set VER=%~1
 if "%VER%"=="" (
     for /f %%d in ('powershell -NoProfile -Command "Get-Date -Format yyyy.MM.dd"') do set VER=%%d
@@ -76,7 +83,7 @@ if exist "ffmpeg.exe" (
             echo   will fail on any machine that has no ffmpeg of its own.
             echo   Put them beside ffmpeg.exe, or swap in a STATIC ffmpeg build.
             echo.
-            pause
+            %HOLD%
             set FFMPEG_NOTE=OMITTED - DLLs missing
         )
     ) else (
@@ -114,7 +121,7 @@ if "!AIM_MISSING!"=="" (
     echo   this release. Building without them - CSV and VBO still work.
     echo.
     set AIM_ARG=
-    pause
+    %HOLD%
 )
 
 REM --- 1c. Universal C Runtime, for Windows 8.1 and 7 ------------------------
@@ -129,14 +136,12 @@ REM  still works on Windows 10/11 and SETUP.md tells older machines what to do.
 set UCRT_ARG=
 set UCRT_NOTE=not bundled - Windows 8.1/7 users need KB2999226
 set UCRT_DIR=
-for /d %%K in ("%ProgramFiles(x86)%\Windows Kits\10\Redist\*") do (
-    if exist "%%K\ucrt\DLLs\x64\ucrtbase.dll" set UCRT_DIR=%%K\ucrt\DLLs\x64
+set "KITS=%ProgramFiles(x86)%\Windows Kits\10\Redist"
+if not exist "%KITS%" set "KITS=%ProgramFiles%\Windows Kits\10\Redist"
+for /d %%K in ("%KITS%\*") do (
+    if exist "%%~K\ucrt\DLLs\x64\ucrtbase.dll" set "UCRT_DIR=%%~K\ucrt\DLLs\x64"
 )
-if not defined UCRT_DIR (
-    if exist "%ProgramFiles(x86)%\Windows Kits\10\Redist\ucrt\DLLs\x64\ucrtbase.dll" (
-        set UCRT_DIR=%ProgramFiles(x86)%\Windows Kits\10\Redist\ucrt\DLLs\x64
-    )
-)
+if not defined UCRT_DIR if exist "%KITS%\ucrt\DLLs\x64\ucrtbase.dll" set "UCRT_DIR=%KITS%\ucrt\DLLs\x64"
 if defined UCRT_DIR (
     echo   UCRT found: !UCRT_DIR!
     set UCRT_ARG=--add-binary "!UCRT_DIR!\*.dll;."
@@ -216,7 +221,7 @@ python -m PyInstaller ^
 if errorlevel 1 (
     echo.
     echo BUILD FAILED - see above.
-    pause
+    %HOLD%
     exit /b 1
 )
 
@@ -236,6 +241,7 @@ REM
 REM  A self-signed certificate is NOT worth doing: SmartScreen and Defender
 REM  ignore it and the user still sees "unknown publisher".
 set SIGN_NOTE=UNSIGNED - expect antivirus warnings on first run
+set SIGNED_OK=
 set SIGN_ARGS=
 if defined LAPSTUDIO_CERT_SUBJECT set SIGN_ARGS=/n "%LAPSTUDIO_CERT_SUBJECT%"
 if defined LAPSTUDIO_CERT_SHA1    set SIGN_ARGS=/sha1 %LAPSTUDIO_CERT_SHA1%
@@ -267,6 +273,7 @@ if defined SIGN_ARGS (
                 echo   signed, but verification failed - check the chain.
             ) else (
                 set SIGN_NOTE=signed and verified
+                set SIGNED_OK=1
             )
         )
     )
@@ -275,14 +282,13 @@ if defined SIGN_ARGS (
 )
 
 if defined LAPSTUDIO_REQUIRE_SIGNING (
-    echo !SIGN_NOTE! | findstr /i "signed and verified" >nul
-    if errorlevel 1 (
+    if not defined SIGNED_OK (
         echo.
         echo ============================================
         echo   ABORTING: LAPSTUDIO_REQUIRE_SIGNING is set but the build is
         echo   not signed. Refusing to package an unsigned release.
         echo ============================================
-        pause
+        %HOLD%
         exit /b 1
     )
 )
@@ -309,7 +315,7 @@ if /i "%MODENAME%"=="folder" (
 if errorlevel 1 (
     echo.
     echo PACKAGING FAILED.
-    pause
+    %HOLD%
     exit /b 1
 )
 
@@ -326,8 +332,7 @@ echo   AiM reader: %AIM_NOTE%
 echo ============================================
 echo.
 if not defined LAPSTUDIO_REQUIRE_SIGNING (
-    echo !SIGN_NOTE! | findstr /i "UNSIGNED" >nul
-    if not errorlevel 1 (
+    if not defined SIGNED_OK (
         echo   ^>^> This release is UNSIGNED. Windows will warn whoever runs it.
         echo   ^>^> Signing is the only permanent fix; see section 2b in this file.
         echo.
@@ -339,8 +344,8 @@ echo    - load a CSV and export a short clip   ^(checks ffmpeg^)
 echo    - load a .drk and export a short clip  ^(checks the AiM reader^)
 echo Ideally on a machine that has never had ffmpeg or RaceStudio installed.
 echo.
-echo If Windows Defender flags the result as Win32/Wacapew.C!ml, that is a false
-echo positive: the !ml suffix means a machine-learning guess, not a signature
+echo If Windows Defender flags the result as Win32/Wacapew.C^!ml, that is a false
+echo positive: the ^!ml suffix means a machine-learning guess, not a signature
 echo match. Report it once at
 echo   https://www.microsoft.com/en-us/wdsi/filesubmission
 echo choosing "Software developer" - they usually clear it within a few days.
@@ -352,5 +357,5 @@ echo single file and produces a noticeably smaller release. Get one from
 echo   https://www.gyan.dev/ffmpeg/builds/   ^(the "essentials" build^)
 echo and replace ffmpeg.exe with it; this script will then bundle just that.
 echo.
-pause
+%HOLD%
 endlocal
