@@ -26,33 +26,48 @@ echo   LapStudio release %VER%
 echo ============================================
 echo.
 
-REM --- 1. Is ffmpeg.exe static or shared? ------------------------------------
+REM --- 1. ffmpeg: bundle it, with its DLLs if it is a shared build -----------
+REM  A shared ffmpeg.exe is only ~545 KB but needs seven av*/sw* DLLs. Those are
+REM  bundled explicitly here rather than relying on PyInstaller's dependency scan
+REM  to notice them. (The v1.1.0 release worked because the scan did catch them;
+REM  do not depend on that.) A static ffmpeg needs none of this and makes a
+REM  smaller exe - see the note at the end of this file.
 set FFMPEG_ARG=
-set FFMPEG_NOTE=none
+set FFMPEG_NOTE=none - users must install ffmpeg themselves
 if exist "ffmpeg.exe" (
     powershell -NoProfile -Command ^
-      "$b=[IO.File]::ReadAllBytes('ffmpeg.exe');" ^
-      "$s=[Text.Encoding]::ASCII.GetString($b);" ^
+      "$s=[Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes('ffmpeg.exe'));" ^
       "if($s -match 'avcodec-\d+\.dll'){exit 1}else{exit 0}"
     if errorlevel 1 (
-        echo   ffmpeg.exe is a SHARED build - it needs its av*.dll files.
-        echo.
-        echo   Bundling it into the exe will NOT work: the bundled copy cannot
-        echo   find the DLLs and video export will fail on other machines.
-        echo.
-        echo   Either:
-        echo     - download a STATIC ffmpeg build ^(one self-contained .exe^)
-        echo       from https://www.gyan.dev/ffmpeg/builds/ ^(choose "essentials"^)
-        echo       and replace ffmpeg.exe with it, or
-        echo     - press a key to continue and ship WITHOUT ffmpeg, telling users
-        echo       to install it themselves.
-        echo.
-        pause
-        set FFMPEG_NOTE=omitted ^(shared build^)
+        echo   ffmpeg.exe is a SHARED build - looking for its DLLs...
+        set MISSING=
+        for %%D in (avcodec-62.dll avformat-62.dll avfilter-11.dll avutil-60.dll ^
+                    swscale-9.dll swresample-6.dll avdevice-62.dll) do (
+            if exist "%%D" (
+                set FFMPEG_ARG=!FFMPEG_ARG! --add-binary "%%D;."
+            ) else (
+                set MISSING=!MISSING! %%D
+            )
+        )
+        if "!MISSING!"=="" (
+            set FFMPEG_ARG=!FFMPEG_ARG! --add-data "ffmpeg.exe;."
+            set FFMPEG_NOTE=bundled ^(shared + 7 DLLs, adds about 86 MB^)
+            echo   all seven found - ffmpeg will be bundled.
+        ) else (
+            echo.
+            echo   MISSING:!MISSING!
+            echo.
+            echo   Without these the bundled ffmpeg cannot start and video export
+            echo   will fail on any machine that has no ffmpeg of its own.
+            echo   Put them beside ffmpeg.exe, or swap in a STATIC ffmpeg build.
+            echo.
+            pause
+            set FFMPEG_NOTE=OMITTED - DLLs missing
+        )
     ) else (
-        echo   ffmpeg.exe is a STATIC build - bundling it into the exe.
+        echo   ffmpeg.exe is a STATIC build - bundling it.
         set FFMPEG_ARG=--add-data "ffmpeg.exe;."
-        set FFMPEG_NOTE=bundled
+        set FFMPEG_NOTE=bundled ^(static^)
     )
 ) else (
     echo   No ffmpeg.exe here - the exe will look for ffmpeg on the PATH.
@@ -90,8 +105,9 @@ if exist "%OUT%" del "%OUT%"
 echo.
 echo Packaging "%OUT%" ...
 
+REM  Only the exe and the setup notes. A loose shared ffmpeg.exe is useless
+REM  without its DLLs, so it is never shipped on its own.
 set FILES='dist\LapStudio.exe','SETUP.md'
-if "%FFMPEG_NOTE%"=="omitted (shared build)" set FILES=!FILES!,'ffmpeg.exe'
 
 powershell -NoProfile -Command ^
   "Compress-Archive -Path %FILES% -DestinationPath '%OUT%' -Force"
@@ -111,7 +127,14 @@ echo   ffmpeg: %FFMPEG_NOTE%
 echo ============================================
 echo.
 echo Test it before sending: copy the zip to a folder with nothing else in it,
-echo unzip, run LapStudio.exe, load a log and export a short clip.
+echo unzip, run LapStudio.exe, load a log and export a short clip. Ideally on a
+echo machine that has never had ffmpeg installed.
+echo.
+echo Size note: bundling the SHARED ffmpeg adds about 86 MB to the exe, because
+echo its seven DLLs total 236 MB before compression. A STATIC ffmpeg build is a
+echo single file and produces a noticeably smaller release. Get one from
+echo   https://www.gyan.dev/ffmpeg/builds/   ^(the "essentials" build^)
+echo and replace ffmpeg.exe with it; this script will then bundle just that.
 echo.
 pause
 endlocal
