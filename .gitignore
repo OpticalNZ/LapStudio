@@ -1,6 +1,7 @@
 # ── Build artefacts ─────────────────────────────────────────────────────────
 build/
 dist/
+# (make_release.bat is versioned; its output in dist/ is not)
 *.spec.bak
 __pycache__/
 *.py[cod]
