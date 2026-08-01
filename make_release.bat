@@ -220,39 +220,71 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM --- 2b. Optional code signing --------------------------------------------
-REM  Signing is the only permanent cure for the antivirus false positives: it
-REM  gives the file a verified publisher, and SmartScreen builds reputation
-REM  against the certificate rather than against each new hash.
+REM --- 2b. Code signing ------------------------------------------------------
+REM  Signing is the only permanent cure for the antivirus false positives, and
+REM  once a certificate exists every release should be signed. It is skippable
+REM  only because you cannot sign without one - set LAPSTUDIO_REQUIRE_SIGNING=1
+REM  and an unsigned build becomes a hard failure instead of a warning.
 REM
-REM  To use it, set these once (System Properties > Environment Variables):
-REM     LAPSTUDIO_CERT   full path to your .pfx
-REM     LAPSTUDIO_CERTPW the password for it
-REM  Without them this step is skipped silently.
-if defined LAPSTUDIO_CERT (
+REM  Pick ONE of these (subject or thumbprint for a token / cloud certificate,
+REM  which is what new OV certificates use - since June 2023 their private keys
+REM  must live on FIPS 140-2 hardware, so a .pfx is no longer issued):
+REM     LAPSTUDIO_CERT_SUBJECT   e.g. "OpticalNZ"        cert in the Windows store
+REM     LAPSTUDIO_CERT_SHA1      certificate thumbprint, no spaces
+REM     LAPSTUDIO_CERT + LAPSTUDIO_CERTPW                path to a .pfx and its password
+REM
+REM  A self-signed certificate is NOT worth doing: SmartScreen and Defender
+REM  ignore it and the user still sees "unknown publisher".
+set SIGN_NOTE=UNSIGNED - expect antivirus warnings on first run
+set SIGN_ARGS=
+if defined LAPSTUDIO_CERT_SUBJECT set SIGN_ARGS=/n "%LAPSTUDIO_CERT_SUBJECT%"
+if defined LAPSTUDIO_CERT_SHA1    set SIGN_ARGS=/sha1 %LAPSTUDIO_CERT_SHA1%
+if defined LAPSTUDIO_CERT         set SIGN_ARGS=/f "%LAPSTUDIO_CERT%" /p "%LAPSTUDIO_CERTPW%"
+
+if /i "%MODENAME%"=="folder" (
+    set TOSIGN=dist\LapStudio\LapStudio.exe
+) else (
+    set TOSIGN=dist\LapStudio.exe
+)
+
+if defined SIGN_ARGS (
     where signtool >nul 2>&1
     if errorlevel 1 (
-        echo   signtool not on PATH - install the Windows SDK to sign builds.
+        echo   signtool not found - install the Windows SDK.
     ) else (
         echo.
-        echo Signing...
-        if /i "%MODENAME%"=="folder" (
-            set TOSIGN=dist\LapStudio\LapStudio.exe
-        ) else (
-            set TOSIGN=dist\LapStudio.exe
-        )
-        signtool sign /f "%LAPSTUDIO_CERT%" /p "%LAPSTUDIO_CERTPW%" ^
+        echo Signing !TOSIGN! ...
+        REM  /tr timestamps the signature so it stays valid after the certificate
+        REM  expires; without it the software "expires" when the cert does.
+        signtool sign %SIGN_ARGS% ^
                  /tr http://timestamp.digicert.com /td sha256 /fd sha256 ^
                  /d "LapStudio" "!TOSIGN!"
         if errorlevel 1 (
-            echo   SIGNING FAILED - shipping unsigned.
+            echo   SIGNING FAILED.
         ) else (
-            echo   signed.
-            set SIGN_NOTE=signed
+            signtool verify /pa /q "!TOSIGN!"
+            if errorlevel 1 (
+                echo   signed, but verification failed - check the chain.
+            ) else (
+                set SIGN_NOTE=signed and verified
+            )
         )
     )
 ) else (
-    set SIGN_NOTE=unsigned - expect an antivirus warning on first run
+    echo   No signing certificate configured - see the notes in this file.
+)
+
+if defined LAPSTUDIO_REQUIRE_SIGNING (
+    echo !SIGN_NOTE! | findstr /i "signed and verified" >nul
+    if errorlevel 1 (
+        echo.
+        echo ============================================
+        echo   ABORTING: LAPSTUDIO_REQUIRE_SIGNING is set but the build is
+        echo   not signed. Refusing to package an unsigned release.
+        echo ============================================
+        pause
+        exit /b 1
+    )
 )
 
 REM --- 3. Package ------------------------------------------------------------
@@ -286,13 +318,21 @@ echo ============================================
 echo   DONE
 echo   %OUT%
 echo   build:      %MODENAME%
-echo   signing:    %SIGN_NOTE%
+echo   signing:    !SIGN_NOTE!
 echo   UCRT:       %UCRT_NOTE%
 echo   runs on:    %MINWIN%  ^(built with Python %PYVER%^)
 echo   ffmpeg:     %FFMPEG_NOTE%
 echo   AiM reader: %AIM_NOTE%
 echo ============================================
 echo.
+if not defined LAPSTUDIO_REQUIRE_SIGNING (
+    echo !SIGN_NOTE! | findstr /i "UNSIGNED" >nul
+    if not errorlevel 1 (
+        echo   ^>^> This release is UNSIGNED. Windows will warn whoever runs it.
+        echo   ^>^> Signing is the only permanent fix; see section 2b in this file.
+        echo.
+    )
+)
 echo Test it before sending: copy the zip to a folder with nothing else in it,
 echo unzip, run LapStudio.exe, then
 echo    - load a CSV and export a short clip   ^(checks ffmpeg^)

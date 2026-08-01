@@ -121,6 +121,9 @@ Rather not take our word for it? Upload the exe to <https://www.virustotal.com/>
 A real threat is flagged by dozens of engines with a named family; a packaging
 false positive looks like the pattern above.
 
+Signed releases do not show this warning. Whether a given release is signed is
+noted on its download page.
+
 ---
 
 ## First render
