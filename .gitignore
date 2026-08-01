@@ -35,6 +35,9 @@ pill_clean.npy
 preview_*.png
 _tm.png
 dash*_*.png
+# ...but these two are runtime assets for the HUD dashes, not screenshots:
+!dash_hud_bg.png
+!dash_hud2_bg.png
 lap*_*.png
 tm*_*.png
 crop_*.png

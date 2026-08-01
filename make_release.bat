@@ -109,6 +109,14 @@ if errorlevel 1 python -m pip install pyinstaller
 echo.
 echo Building dist\LapStudio.exe ...
 echo.
+REM  Assets: the two display fonts, and the backing images the HUD dashes draw
+REM  on (Dash 7 and Dash 9 load these at render time - without them those two
+REM  dashes lose their backing plate).
+REM  Modules: every renderer, both log readers, and the AiM helper. Most are
+REM  found by the import scan, but they are pinned so a refactor cannot quietly
+REM  drop one from the bundle.
+REM  aim_reader is an optional import that does not exist; excluding it keeps the
+REM  build log clean.
 python -m PyInstaller ^
   --onefile ^
   --windowed ^
@@ -116,15 +124,21 @@ python -m PyInstaller ^
   --name LapStudio ^
   --add-data "BigShoulders-Bold.ttf;." ^
   --add-data "Poppins-Bold.ttf;." ^
+  --add-data "dash_hud_bg.png;." ^
+  --add-data "dash_hud2_bg.png;." ^
   --add-data "xrk_helper.py;." ^
   --hidden-import xrk_helper ^
   --hidden-import xrk_reader ^
   --hidden-import vbo_reader ^
+  --hidden-import renderer_pil ^
+  --hidden-import renderer_multistyle ^
   --hidden-import lapdata_render ^
   --hidden-import gtrace_render ^
   --hidden-import trackmap_render ^
   --hidden-import dash8_render ^
   --hidden-import textgrid ^
+  --exclude-module aim_reader ^
+  --exclude-module matplotlib ^
   %FFMPEG_ARG% ^
   %AIM_ARG% ^
   --collect-all aggdraw ^

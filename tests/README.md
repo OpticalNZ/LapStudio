@@ -12,3 +12,11 @@ root:
 
 The stubs stand in for tkinter so the build path can be executed without a
 display. They are only for testing - the app itself needs real tkinter.
+
+`tests/check_release_inputs.py` walks the imports from the app entry point,
+finds every font, image and module the running program loads, and checks each
+one appears in `make_release.bat`. A PyInstaller build fails silently - a
+missing asset only surfaces when a user picks the one dash that needed it - so
+run this before cutting a release:
+
+    python tests/check_release_inputs.py

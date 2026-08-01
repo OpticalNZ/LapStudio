@@ -748,8 +748,30 @@ def _bind_theme(name):
     ON_FILL    = T["ON_FILL"]
 
 
-_PREFS_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "ui_prefs.json")
+def _prefs_dir():
+    """Where to keep ui_prefs.json.
+
+    Not beside __file__: in a PyInstaller build that is the unpacked bundle in a
+    temp folder, wiped when the app exits, so the theme would never persist.
+    Beside the exe keeps it portable; if that is read-only (Program Files, a
+    memory stick) fall back to the user profile.
+    """
+    if getattr(sys, "frozen", False):
+        here = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        here = os.path.dirname(os.path.abspath(__file__))
+    if os.access(here, os.W_OK):
+        return here
+    base = (os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"))
+    d = os.path.join(base, "LapStudio")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        return here
+    return d
+
+
+_PREFS_PATH = os.path.join(_prefs_dir(), "ui_prefs.json")
 
 
 def _load_pref(key, default=None):
