@@ -4,6 +4,10 @@
 `LapStudio.exe`, and everything it needs is already inside — ffmpeg for video
 export and AiM's reader for `.drk` / `.xrk` logs.
 
+**Windows 10 or newer.** The released build embeds Python 3.14, which Microsoft's
+support lifecycle limits to Windows 10 and later. On Windows 8.1 or 8 it stops
+with *"Failed to load Python DLL python314.dll"*. See "Older Windows" below.
+
 Skip to "First render" below.
 
 ---
@@ -47,6 +51,24 @@ which provides `msvcr90.dll`.
 
 If a `.drk` will not open, run `python diagnose_aim.py "your log.drk"` — it
 reports which dependency is missing and what the app can see in the file.
+
+---
+
+## Older Windows: "Failed to load Python DLL python314.dll"
+
+The release will not run on Windows 8.1 or 8, and the reason is not fixable on
+the machine. Python itself sets the floor — from the Python documentation:
+
+> Python 3.14 supports Windows 10 and newer. If you require Windows 7 support,
+> please install Python 3.8. If you require Windows 8.1 support, please install
+> Python 3.12.
+
+So a build made with Python 3.14 needs Windows 10. Nothing installed on the old
+machine changes that.
+
+If a Windows 8.1 machine has to be supported, LapStudio can be rebuilt from
+source using **Python 3.12** — everything it uses works there. Windows 8.0 is
+not supported by any current Python and would need the free update to 8.1 first.
 
 ---
 

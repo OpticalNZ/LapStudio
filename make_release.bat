@@ -146,6 +146,24 @@ if defined UCRT_DIR (
     echo   or KB2999226 on older machines. Install the Windows SDK to bundle it.
 )
 
+REM --- 1d. Which Windows will this build run on? -----------------------------
+REM  Decided by the Python you build with, not by PyInstaller. Per PEP 11 a
+REM  Python release supports a Windows version only while Microsoft does:
+REM     Python 3.13+  ->  Windows 10 and newer
+REM     Python 3.12   ->  Windows 8.1 and newer
+REM     Python 3.8    ->  Windows 7 and newer
+REM  Building with 3.14 and running on Windows 8 gives
+REM  "Failed to load Python DLL python314.dll".
+for /f "tokens=2" %%v in ('python -V 2^>^&1') do set PYVER=%%v
+for /f "tokens=1,2 delims=." %%a in ("!PYVER!") do (
+    set PYMAJ=%%a
+    set PYMIN=%%b
+)
+set MINWIN=Windows 10 or newer
+if !PYMAJ! EQU 3 if !PYMIN! LEQ 12 set MINWIN=Windows 8.1 or newer
+if !PYMAJ! EQU 3 if !PYMIN! LEQ 8  set MINWIN=Windows 7 or newer
+echo   Python !PYVER!  ->  this build will require !MINWIN!
+
 REM --- 2. Build --------------------------------------------------------------
 python -m pip show pyinstaller >nul 2>&1
 if errorlevel 1 python -m pip install pyinstaller
@@ -270,6 +288,7 @@ echo   %OUT%
 echo   build:      %MODENAME%
 echo   signing:    %SIGN_NOTE%
 echo   UCRT:       %UCRT_NOTE%
+echo   runs on:    %MINWIN%  ^(built with Python %PYVER%^)
 echo   ffmpeg:     %FFMPEG_NOTE%
 echo   AiM reader: %AIM_NOTE%
 echo ============================================

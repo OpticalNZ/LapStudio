@@ -62,7 +62,9 @@ step-by-step version including ffmpeg and the AiM reader.
 
 Requirements:
 
-- Python 3.10 or newer
+- Python 3.10 or newer. Note the Windows floor comes from Python, not LapStudio:
+  3.13+ needs Windows 10, 3.12 still runs on 8.1, 3.8 on 7. Build with 3.12 if
+  you need to support Windows 8.1.
 - `tkinter` — bundled with CPython on Windows and macOS; on Debian/Ubuntu
   `sudo apt install python3-tk`
 - **ffmpeg** on your `PATH`, or `ffmpeg.exe` beside the source. Not bundled here;
