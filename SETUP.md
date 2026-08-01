@@ -50,6 +50,31 @@ reports which dependency is missing and what the app can see in the file.
 
 ---
 
+## "api-ms-win-crt-stdio-l1-1-0.dll is missing"
+
+Or any other `api-ms-win-crt-*.dll`. This is the **Universal C Runtime**, a
+Microsoft component that Windows 10 and 11 include as standard but Windows 8.1
+and 7 do not. Python, ffmpeg and the imaging library all rely on it.
+
+Fix it on that machine, whichever is easier:
+
+- Run Windows Update and take everything, which pulls in **KB2999226**
+  ("Update for Universal C Runtime in Windows"), or
+- install the **Visual C++ 2015-2022 Redistributable (x64)** from
+  <https://aka.ms/vs/17/release/vc_redist.x64.exe>, which installs the UCRT as
+  part of it
+
+Then run LapStudio again.
+
+**Windows 8.0 specifically** cannot be fixed this way. KB2999226 requires 8.1,
+and current Python does not support 8.0 either. That machine needs the free
+update to 8.1 first.
+
+Newer LapStudio releases may carry the runtime with them, in which case this
+never comes up — the build reports "UCRT: bundled" when it does.
+
+---
+
 ## "Windows protected your PC" or a virus warning
 
 Windows Defender may report **Trojan:Win32/Wacatac.B!ml** (or Wacapew, or another

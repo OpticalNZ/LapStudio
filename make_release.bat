@@ -117,6 +117,35 @@ if "!AIM_MISSING!"=="" (
     pause
 )
 
+REM --- 1c. Universal C Runtime, for Windows 8.1 and 7 ------------------------
+REM  Windows 10 and 11 include the UCRT (api-ms-win-crt-*.dll, ucrtbase.dll).
+REM  Windows 8.1 and 7 do NOT unless update KB2999226 was installed, and without
+REM  it the app dies at launch with "api-ms-win-crt-stdio-l1-1-0.dll is missing".
+REM  Python, ffmpeg and Pillow all link against it.
+REM
+REM  Microsoft permits shipping these app-local, from the Windows SDK's Redist
+REM  folder. If the SDK is installed here they are bundled; if not, the release
+REM  still works on Windows 10/11 and SETUP.md tells older machines what to do.
+set UCRT_ARG=
+set UCRT_NOTE=not bundled - Windows 8.1/7 users need KB2999226
+set UCRT_DIR=
+for /d %%K in ("%ProgramFiles(x86)%\Windows Kits\10\Redist\*") do (
+    if exist "%%K\ucrt\DLLs\x64\ucrtbase.dll" set UCRT_DIR=%%K\ucrt\DLLs\x64
+)
+if not defined UCRT_DIR (
+    if exist "%ProgramFiles(x86)%\Windows Kits\10\Redist\ucrt\DLLs\x64\ucrtbase.dll" (
+        set UCRT_DIR=%ProgramFiles(x86)%\Windows Kits\10\Redist\ucrt\DLLs\x64
+    )
+)
+if defined UCRT_DIR (
+    echo   UCRT found: !UCRT_DIR!
+    set UCRT_ARG=--add-binary "!UCRT_DIR!\*.dll;."
+    set UCRT_NOTE=bundled ^(runs on Windows 8.1 and 7 too^)
+) else (
+    echo   UCRT redistributable not found - the build will need Windows 10 or 11,
+    echo   or KB2999226 on older machines. Install the Windows SDK to bundle it.
+)
+
 REM --- 2. Build --------------------------------------------------------------
 python -m pip show pyinstaller >nul 2>&1
 if errorlevel 1 python -m pip install pyinstaller
@@ -162,6 +191,7 @@ python -m PyInstaller ^
   --exclude-module matplotlib ^
   %FFMPEG_ARG% ^
   %AIM_ARG% ^
+  %UCRT_ARG% ^
   --collect-all aggdraw ^
   ecu_overlay_app.py
 
@@ -239,6 +269,7 @@ echo   DONE
 echo   %OUT%
 echo   build:      %MODENAME%
 echo   signing:    %SIGN_NOTE%
+echo   UCRT:       %UCRT_NOTE%
 echo   ffmpeg:     %FFMPEG_NOTE%
 echo   AiM reader: %AIM_NOTE%
 echo ============================================
