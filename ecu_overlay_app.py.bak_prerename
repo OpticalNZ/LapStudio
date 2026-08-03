@@ -4,23 +4,6 @@ GUI application for generating chroma-key video overlays from ECU datalogs.
 Supports Emtron, Link ECU, and any CSV/TSV structured log file.
 """
 
-import os
-import sys
-
-# ── AiM helper mode ─────────────────────────────────────────────────────────
-# Reading an AiM .drk goes through a separate process, so a crash in AiM's DLL
-# cannot take the app down with it. Outside a bundle that process is
-# "python xrk_helper.py"; inside a PyInstaller build there is no python.exe to
-# call, so the exe re-runs ITSELF with this flag and dispatches straight to the
-# helper. Must happen before tkinter is touched: this process draws no window.
-if len(sys.argv) >= 4 and sys.argv[1] == "--xrk-helper":
-    sys.path.insert(0, getattr(sys, "_MEIPASS",
-                               os.path.dirname(os.path.abspath(__file__))))
-    del sys.argv[1]                      # helper expects <file> <out> as 1 and 2
-    import xrk_helper
-    xrk_helper.main()
-    sys.exit(0)
-
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
@@ -748,30 +731,8 @@ def _bind_theme(name):
     ON_FILL    = T["ON_FILL"]
 
 
-def _prefs_dir():
-    """Where to keep ui_prefs.json.
-
-    Not beside __file__: in a PyInstaller build that is the unpacked bundle in a
-    temp folder, wiped when the app exits, so the theme would never persist.
-    Beside the exe keeps it portable; if that is read-only (Program Files, a
-    memory stick) fall back to the user profile.
-    """
-    if getattr(sys, "frozen", False):
-        here = os.path.dirname(os.path.abspath(sys.executable))
-    else:
-        here = os.path.dirname(os.path.abspath(__file__))
-    if os.access(here, os.W_OK):
-        return here
-    base = (os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"))
-    d = os.path.join(base, "LapStudio")
-    try:
-        os.makedirs(d, exist_ok=True)
-    except Exception:
-        return here
-    return d
-
-
-_PREFS_PATH = os.path.join(_prefs_dir(), "ui_prefs.json")
+_PREFS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "ui_prefs.json")
 
 
 def _load_pref(key, default=None):
@@ -1059,7 +1020,7 @@ class App(tk.Tk):
         # Optional separate lap-data overlay video
         self.gen_lapdata = tk.BooleanVar(value=False)
         self.ld_mode     = tk.StringVar(value="Current lap")
-        self.ld_style    = tk.StringVar(value="Dash 5 · Panels")
+        self.ld_style    = tk.StringVar(value="Panels (Dash 5)")
         self.ld_backdrop = tk.StringVar(value="Chroma magenta")
         # Optional separate steering-wheel overlay video — removed (renderer
         # dropped). Placeholder vars kept absent; no wheel controls remain.
@@ -1078,7 +1039,7 @@ class App(tk.Tk):
         self.lap_sf_radius   = tk.StringVar(value="30")
         self.lap_lat_col     = tk.StringVar(value="")
         self.lap_lon_col     = tk.StringVar(value="")
-        self.style_var       = tk.StringVar(value=_R.DASH_NAMES[0])
+        self.style_var       = tk.StringVar(value="Dash 1 (white gauge)")
         # Trim the output to the dash panel where the panel does not fill the
         # frame, so the result needs no chroma keying at all.
         self.crop_to_content = tk.BooleanVar(value=True)
@@ -1710,8 +1671,16 @@ class App(tk.Tk):
         tk.Label(sty, text="Visual Style:", font=FONT_HEAD,
                  bg=DARK_CARD, fg=TEXT_SEC).grid(row=0, column=0, sticky="w", padx=(0,10))
         _style_cb = ttk.Combobox(sty, textvariable=self.style_var,
-                      values=list(_R.DASH_NAMES),
-                      width=38, font=FONT_MONO, state="readonly")
+                      values=["Dash 1 (white gauge)", "Dash 2 (black gauge)",
+                              "Dash 3", "Dash 4", "Dash 5", "Dash 6 (Logger)",
+                              "Dash 6b (Wide Logger)",
+                              "Dash 7 (HUD)",
+                              "Dash 9 (Triple)",
+                              "Dash 10 (Arc)",
+                              "Dash 8",
+                              "Dash 8b (bars inside)",
+                              "Vertical Text", "Horizontal Text"],
+                      width=22, font=FONT_MONO, state="readonly")
         _style_cb.grid(row=0, column=1, sticky="w")
         self._fix_combo(_style_cb)
 
@@ -1858,13 +1827,10 @@ class App(tk.Tk):
         tk.Label(ld, text="Graphic style:", font=FONT_SMALL, bg=DARK_CARD, fg=TEXT_SEC).grid(
             row=3, column=0, sticky="w", padx=(0,10), pady=(2,2))
         _ld_sty = ttk.Combobox(ld, textvariable=self.ld_style, state="readonly",
-                               values=["Dash 1 · Cells, light",
-                                       "Dash 2 · Cells, dark",
-                                       "Dash 5 · Panels",
-                                       "Dash 6 · Logger rows",
-                                       "Dash 7 · HUD bar",
-                                       "Dash 8b · Slanted panels",
-                                       "Dash 10 · Plain text"],
+                               values=["Panels (Dash 5)", "HUD (Dash 7/9)",
+                                       "Logger (Dash 6)", "Plain (Dash 10)",
+                                       "Cells dark (Dash 2)", "Cells light (Dash 1)",
+                                       "Slanted panels (Dash 8b)"],
                                width=22, font=FONT_MONO)
         _ld_sty.grid(row=3, column=1, columnspan=2, sticky="w", pady=(2,2))
         self._fix_combo(_ld_sty)
@@ -1882,8 +1848,11 @@ class App(tk.Tk):
         self._style_info_lbl.grid(row=5, column=0, columnspan=4, sticky="w", pady=(4,0))
         def _on_style_change(*_):
             _sn1 = self.style_var.get()
-            _fw, _fh = _R.style_frame_size(_R.STYLES.get(_sn1))
-            _r = f"{_fw}×{_fh}"
+            if _sn1 in ("Vertical Text", "Horizontal Text"): _r="1920×1080"
+            elif _sn1 == "Dash 7 (HUD)": _r="1920×365"
+            elif _sn1 == "Dash 9 (Triple)": _r="1920×405"
+            elif _sn1 == "Dash 10 (Arc)": _r="2560×750"
+            else: _r="1920×750"
             _data_fps2 = getattr(self, "_data_fps", None)
             _sel_fps = self.fps_var.get() if hasattr(self, "fps_var") else ""
             if _data_fps2 and hasattr(self, "_file_info_var"):
@@ -2533,8 +2502,12 @@ class App(tk.Tk):
         # Set fps_var to match data rate (user can override)
         if hasattr(self, "_file_info_var"):
             _style_now = self.style_var.get() if hasattr(self, "style_var") else ""
-            _fw, _fh = _R.style_frame_size(_R.STYLES.get(_style_now))
-            _res = f"{_fw}×{_fh}"
+            if _style_now in ("Style 7", "Style 8"): _res="1920×1080"
+            elif self.style2_var.get() not in ("None","") and hasattr(self,"style2_var"): _res="1920×1080"
+            elif self.style_var.get() == "Dash 7 (HUD)": _res="1920×365"
+            elif self.style_var.get() == "Dash 9 (Triple)": _res="1920×405"
+            elif self.style_var.get() == "Dash 10 (Arc)": _res="1920×500"
+            else: _res="1920×750"
             _sel_fps_now = self.fps_var.get() if hasattr(self,"fps_var") else fps_resample
             self._file_info_var.set(
                 f"data: {fps_resample} fps  ·  render: {_sel_fps_now} fps  ·  "
@@ -2725,7 +2698,7 @@ class App(tk.Tk):
         """For Dash 10 (Arc): supply the full-lap GPS path to the renderer for
         its mini track map. Safe no-op if no GPS columns are available."""
         try:
-            if not (_R.STYLES.get(self.style_var.get()) or {}).get("style32_layout"):
+            if self.style_var.get() != "Dash 10 (Arc)":
                 return
             latc = self.lap_lat_col.get(); lonc = self.lap_lon_col.get()
             if latc and lonc and latc in rows.columns and lonc in rows.columns:
@@ -3002,7 +2975,12 @@ class App(tk.Tk):
             self._preview_dual()
             return
 
-        resolution = _R.style_frame_size(_R.STYLES.get(_style_now))
+        if _style_now in ("Style 7", "Style 8"):
+            resolution = (1920, 1080)
+        elif _style_now == "Dash 10 (Arc)":
+            resolution = (2560, 750)     # wide frame: side margins for corner text
+        else:
+            resolution = (1920, 750)
         out_w, out_h = resolution
         _nat_h = int(_R.H_VID * (out_w / _R.W_VID))
         if out_h < _nat_h - 2:
@@ -3012,7 +2990,7 @@ class App(tk.Tk):
             scale = out_w / _R.W_VID
             out_h_actual = int(_R.H_VID * scale)
 
-        P = self._apply_backdrop_to_P(_R.STYLES.get(_style_now, _R.STYLES[_R.DASH_NAMES[0]]))
+        P = self._apply_backdrop_to_P(_R.STYLES.get(_style_now, _R.STYLES["Dash 1 (white gauge)"]))
 
         import math as _math
         rows = self._working_rows
@@ -3065,7 +3043,7 @@ class App(tk.Tk):
         t_now = float(row['ts'])
         trace = rows[(rows['ts'] >= t_now - g_trail) & (rows['ts'] <= t_now)]
         # Style 14 uses fixed 10s trail regardless of g_trail setting
-        if _R.style_trail_fixed_secs(_R.STYLES.get(_style_now)):
+        if _style_now in ("Style 14", "Dash 6 (Logger)"):
             trace = rows[(rows['ts'] >= t_now - 10.0) & (rows['ts'] <= t_now)]
 
         # 1s peak RPM
@@ -3675,8 +3653,12 @@ class App(tk.Tk):
         # Set fps_var to match data rate (user can override)
         if hasattr(self, "_file_info_var"):
             _style_now = self.style_var.get() if hasattr(self, "style_var") else ""
-            _fw, _fh = _R.style_frame_size(_R.STYLES.get(_style_now))
-            _res = f"{_fw}×{_fh}"
+            if _style_now in ("Style 7", "Style 8"): _res="1920×1080"
+            elif self.style2_var.get() not in ("None","") and hasattr(self,"style2_var"): _res="1920×1080"
+            elif self.style_var.get() == "Dash 7 (HUD)": _res="1920×365"
+            elif self.style_var.get() == "Dash 9 (Triple)": _res="1920×405"
+            elif self.style_var.get() == "Dash 10 (Arc)": _res="1920×500"
+            else: _res="1920×750"
             _sel_fps_now = self.fps_var.get() if hasattr(self,"fps_var") else fps_resample
             self._file_info_var.set(
                 f"data: {fps_resample} fps  ·  render: {_sel_fps_now} fps  ·  "
@@ -4024,7 +4006,12 @@ class App(tk.Tk):
         """
         import math as _math
         _style_now = self.style_var.get()
-        resolution = _R.style_frame_size(_R.STYLES.get(_style_now))
+        if _style_now in ("Style 7", "Style 8"):
+            resolution = (1920, 1080)
+        elif _style_now == "Dash 10 (Arc)":
+            resolution = (2560, 750)     # wide frame: side margins for corner text
+        else:
+            resolution = (1920, 750)
         out_w, out_h = resolution
         if max_w:
             # Render smaller for an on-screen preview: much faster, and the
@@ -4041,7 +4028,7 @@ class App(tk.Tk):
             out_h_actual = int(_R.H_VID * scale)
 
         P = self._apply_backdrop_to_P(
-            _R.STYLES.get(_style_now, _R.STYLES[_R.DASH_NAMES[0]]))
+            _R.STYLES.get(_style_now, _R.STYLES["Dash 1 (white gauge)"]))
 
         _bg_key = (_style_now, self.backdrop_var.get(), out_w, out_h)
         if getattr(self, "_pv_bg_key", None) != _bg_key:
@@ -4085,7 +4072,7 @@ class App(tk.Tk):
         row = rows.iloc[idx]
         t_now = float(row['ts'])
         trace = rows[(rows['ts'] >= t_now - g_trail) & (rows['ts'] <= t_now)]
-        if _R.style_trail_fixed_secs(_R.STYLES.get(_style_now)):
+        if _style_now in ("Style 14", "Dash 6 (Logger)"):
             trace = rows[(rows['ts'] >= t_now - 10.0) & (rows['ts'] <= t_now)]
 
         peak_mask = (rows['ts'] >= t_now - 1.0) & (rows['ts'] <= t_now)
@@ -4163,7 +4150,12 @@ class App(tk.Tk):
             self._preview_dual()
             return
 
-        resolution = _R.style_frame_size(_R.STYLES.get(_style_now))
+        if _style_now in ("Style 7", "Style 8"):
+            resolution = (1920, 1080)
+        elif _style_now == "Dash 10 (Arc)":
+            resolution = (2560, 750)
+        else:
+            resolution = (1920, 750)
         out_w, out_h = resolution
         rows = self._working_rows
         # Safety net: ensure selected channel columns are present in working rows
@@ -5046,22 +5038,19 @@ class App(tk.Tk):
 
     def _ld_style_key(self):
         """Lap-data 'Graphic style' label -> lapdata_render style key."""
-        v = (self.ld_style.get() if hasattr(self, "ld_style") else "") or ""
-        # Matched on the dash the graphic is lifted from, so the wording of the
-        # label can change without breaking this. Split on the separator and
-        # compare the whole token: a prefix test made "Dash 10" match "Dash 1".
-        _tag = v.split("·")[0].strip()
-        _BY_DASH = {"Dash 1": "cells_light", "Dash 2": "cells_dark",
-                    "Dash 5": "panels", "Dash 6": "logger", "Dash 7": "hud",
-                    "Dash 8b": "para", "Dash 10": "plain"}
-        if _tag in _BY_DASH:
-            return _BY_DASH[_tag]
-        # legacy labels
-        for _tag, _key in (("HUD", "hud"), ("Logger", "logger"), ("Plain", "plain"),
-                           ("Cells dark", "cells_dark"), ("Cells light", "cells_light"),
-                           ("Slanted", "para")):
-            if v.startswith(_tag):
-                return _key
+        v = self.ld_style.get() if hasattr(self, "ld_style") else ""
+        if v.startswith("HUD"):
+            return "hud"
+        if v.startswith("Logger"):
+            return "logger"
+        if v.startswith("Plain"):
+            return "plain"
+        if v.startswith("Cells dark"):
+            return "cells_dark"
+        if v.startswith("Cells light"):
+            return "cells_light"
+        if v.startswith("Slanted"):
+            return "para"
         return "panels"
 
     def _tm_segment_secs(self):
@@ -5369,8 +5358,12 @@ class App(tk.Tk):
         _style2_res = self.style2_var.get() if hasattr(self,"style2_var") else "None"
         if _style2_res and _style2_res != "None":
             resolution = (1920, 1080)
+        elif style in ("Style 7", "Style 8"):
+            resolution = (1920, 1080)
+        elif style == "Dash 10 (Arc)":
+            resolution = (2560, 750)     # wide frame: side margins for corner text
         else:
-            resolution = _R.style_frame_size(_R.STYLES.get(style))
+            resolution = (1920, 750)
         try:
             g_trail = float(self.g_trail_secs.get())
         except ValueError:

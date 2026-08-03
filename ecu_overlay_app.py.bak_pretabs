@@ -4,23 +4,6 @@ GUI application for generating chroma-key video overlays from ECU datalogs.
 Supports Emtron, Link ECU, and any CSV/TSV structured log file.
 """
 
-import os
-import sys
-
-# ── AiM helper mode ─────────────────────────────────────────────────────────
-# Reading an AiM .drk goes through a separate process, so a crash in AiM's DLL
-# cannot take the app down with it. Outside a bundle that process is
-# "python xrk_helper.py"; inside a PyInstaller build there is no python.exe to
-# call, so the exe re-runs ITSELF with this flag and dispatches straight to the
-# helper. Must happen before tkinter is touched: this process draws no window.
-if len(sys.argv) >= 4 and sys.argv[1] == "--xrk-helper":
-    sys.path.insert(0, getattr(sys, "_MEIPASS",
-                               os.path.dirname(os.path.abspath(__file__))))
-    del sys.argv[1]                      # helper expects <file> <out> as 1 and 2
-    import xrk_helper
-    xrk_helper.main()
-    sys.exit(0)
-
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
@@ -676,190 +659,37 @@ FPS = 30
 # GUI
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── COLOUR SCHEMES ──────────────────────────────────────────────────────────
-# Two themes, both built on cobalt blue. Chosen with measured contrast rather
-# than by eye: the previous single theme had borders at 1.4:1 (invisible), muted
-# text at 5.1:1, and the same colour for the window and for input fields, so
-# nothing separated from anything else.
-#
-# Note on cobalt: true cobalt (#0047ab) manages only 2.1:1 on a near-black
-# background, so on the dark theme it is used as a FILL behind white text and a
-# lighter cobalt carries accent text. On the light theme #0047ab is ideal as text
-# at 8.4:1.
-THEMES = {
-    "dark": {
-        "BG":       "#05060a",   # window
-        "CARD":     "#1a1e29",   # cards / panels          1.22:1 vs window
-        "PANEL":    "#0c0e15",   # input fields / sunken    1.16:1 vs card
-        "ACCENT":   "#8ab6ff",   # accent text, headings    8.8:1  on card
-        "ACCENT2":  "#9bb8e8",   # secondary accent, stats  9.0:1
-        "FILL":     "#1f6feb",   # cobalt fill (buttons, active tab)
-        "ON_FILL":  "#ffffff",   # text on the cobalt fill  4.6:1
-        "TEXT_PRI": "#f7f9ff",   #                          15.9:1
-        "TEXT_SEC": "#aab4c6",   #                          8.3:1
-        "BORDER":   "#42506b",   # visible dividers         2.05:1
-        "GREEN":    "#3ddc84",
-        "RED":      "#ff5470",
-    },
-    "light": {
-        "BG":       "#e2e7f0",
-        "CARD":     "#ffffff",
-        "PANEL":    "#eff3f9",
-        "ACCENT":   "#003d92",   #                          10.2:1 on white
-        "ACCENT2":  "#14539b",   #                          7.7:1
-        "FILL":     "#0047ab",
-        "ON_FILL":  "#f7faff",   #                          8.1:1 on the fill
-        "TEXT_PRI": "#0b1220",   #                          18.7:1
-        "TEXT_SEC": "#48536b",   #                          7.7:1
-        "BORDER":   "#bcc7db",
-        "GREEN":    "#0f7a3d",
-        "RED":      "#c62828",
-    },
-}
-
-THEME_NAME = "dark"
-
-# Module-level names the whole UI is written against. _apply_theme() rebinds them.
-DARK_BG = DARK_PANEL = DARK_CARD = ACCENT = ACCENT2 = TEXT_PRI = TEXT_SEC = ""
-BORDER_COL = GREEN_UI = RED_UI = FILL_COL = ON_FILL = ""
+# ── FIXED COLOUR SCHEME ─────────────────────────────────────────────────────
+# Single locked theme (matches the dash design language: dark slate + cyan accent)
+DARK_BG    = "#101018"   # window background
+DARK_PANEL = "#101018"   # input fields / sunken areas
+DARK_CARD  = "#1a1a22"   # cards / panels
+ACCENT     = "#3fb6d6"   # cyan accent (headings, highlights)
+ACCENT2    = "#3fb6d6"   # secondary accent (stats) — same cyan family
+TEXT_PRI   = "#e8e8ee"   # primary text
+TEXT_SEC   = "#8a8a96"   # secondary / muted text
+BORDER_COL = "#33333f"   # borders / dividers
+GREEN_UI   = "#39d353"
+RED_UI     = "#ff3b5c"
 
 
-def _theme_colours(name):
-    return THEMES.get(name, THEMES["dark"])
-
-
-def _bind_theme(name):
-    """Point the module colour names at one of the THEMES."""
-    global THEME_NAME, DARK_BG, DARK_PANEL, DARK_CARD, ACCENT, ACCENT2
-    global TEXT_PRI, TEXT_SEC, BORDER_COL, GREEN_UI, RED_UI, FILL_COL, ON_FILL
-    T = _theme_colours(name)
-    THEME_NAME = name if name in THEMES else "dark"
-    DARK_BG    = T["BG"]
-    DARK_PANEL = T["PANEL"]
-    DARK_CARD  = T["CARD"]
-    ACCENT     = T["ACCENT"]
-    ACCENT2    = T["ACCENT2"]
-    TEXT_PRI   = T["TEXT_PRI"]
-    TEXT_SEC   = T["TEXT_SEC"]
-    BORDER_COL = T["BORDER"]
-    GREEN_UI   = T["GREEN"]
-    RED_UI     = T["RED"]
-    FILL_COL   = T["FILL"]
-    ON_FILL    = T["ON_FILL"]
-
-
-def _prefs_dir():
-    """Where to keep ui_prefs.json.
-
-    Not beside __file__: in a PyInstaller build that is the unpacked bundle in a
-    temp folder, wiped when the app exits, so the theme would never persist.
-    Beside the exe keeps it portable; if that is read-only (Program Files, a
-    memory stick) fall back to the user profile.
-    """
-    if getattr(sys, "frozen", False):
-        here = os.path.dirname(os.path.abspath(sys.executable))
-    else:
-        here = os.path.dirname(os.path.abspath(__file__))
-    if os.access(here, os.W_OK):
-        return here
-    base = (os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"))
-    d = os.path.join(base, "LapStudio")
-    try:
-        os.makedirs(d, exist_ok=True)
-    except Exception:
-        return here
-    return d
-
-
-_PREFS_PATH = os.path.join(_prefs_dir(), "ui_prefs.json")
-
-
-def _load_pref(key, default=None):
-    try:
-        import json
-        with open(_PREFS_PATH, encoding="utf-8") as fh:
-            return json.load(fh).get(key, default)
-    except Exception:
-        return default
-
-
-def _save_pref(key, value):
-    try:
-        import json
-        data = {}
-        if os.path.exists(_PREFS_PATH):
-            with open(_PREFS_PATH, encoding="utf-8") as fh:
-                data = json.load(fh)
-        data[key] = value
-        with open(_PREFS_PATH, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-    except Exception:
-        pass
-
-
-# The live theme switch remaps colours BY VALUE, so two roles in one palette
-# must never share a value - otherwise the swap becomes ambiguous and, in the
-# case that caught this, white cards stayed white when returning to the dark
-# theme. Fail loudly at import rather than mysteriously at runtime.
-for _tn, _tv in THEMES.items():
-    if len(set(v.lower() for v in _tv.values())) != len(_tv):
-        from collections import Counter as _C
-        _dupes = [c for c, n in _C(v.lower() for v in _tv.values()).items() if n > 1]
-        raise AssertionError(
-            f"theme '{_tn}' reuses {_dupes} for more than one role; give each "
-            f"role its own value so the live theme switch stays unambiguous")
-
-_bind_theme(_load_pref("theme", "dark"))
-
-
-# 1..4 then every 5 up to 120. Built once: two separate ranges were being
-# concatenated at each dropdown and both included 5, so "5" appeared twice.
-_TRAIL_SECS = [str(i) for i in range(1, 5)] + [str(i) for i in range(5, 125, 5)]
-
-_UI_PREFS = ["Segoe UI Semibold", "Segoe UI", "Calibri", "Helvetica", "Arial"]
-_MONO_PREFS = ["Consolas", "DejaVu Sans Mono", "Courier New", "Liberation Mono",
-               "Menlo", "Monaco", "Courier"]
-
-
-def _pick_font_family(preferred, fallback_named=None):
-    """First installed family from `preferred`.
-
-    tkinter.font.families() needs a Tk root, so at import time this always fails
-    and falls through. `fallback_named` names a built-in Tk font (TkFixedFont)
-    whose actual family is used instead - important for the monospace font,
-    because "TkFixedFont" is not itself a family name and Tk silently substitutes
-    a PROPORTIONAL default, which is what made the lap table columns drift.
-    """
+def _pick_font_family(preferred):
+    """Return the first installed font family from `preferred`, else a sane default."""
     try:
         import tkinter.font as _tkfont
         avail = set(_tkfont.families())
         for fam in preferred:
             if fam in avail:
                 return fam
-        if fallback_named:
-            return _tkfont.nametofont(fallback_named).actual("family")
     except Exception:
         pass
-    return preferred[0]
-
-
-def _resolve_fonts():
-    """Re-pick the font families now that a Tk root exists, and rebuild the
-    FONT_* tuples. Called at the very start of _build_ui, before any widget."""
-    global _UI_FAMILY, _MONO_FAMILY
-    global FONT_TITLE, FONT_HEAD, FONT_BODY, FONT_SMALL, FONT_MONO
-    _UI_FAMILY = _pick_font_family(_UI_PREFS, "TkDefaultFont")
-    _MONO_FAMILY = _pick_font_family(_MONO_PREFS, "TkFixedFont")
-    FONT_TITLE = (_UI_FAMILY, 24, "bold")
-    FONT_HEAD = (_UI_FAMILY, 12, "bold")
-    FONT_BODY = (_UI_FAMILY, 11, "bold")
-    FONT_SMALL = (_UI_FAMILY, 10, "bold")
-    FONT_MONO = (_MONO_FAMILY, 11, "bold")
+    return preferred[-1]
 
 # UI font (clean, readable) and a monospace for data/values
-# Provisional: _resolve_fonts() replaces these once the root window exists.
-_UI_FAMILY = _UI_PREFS[0]
-_MONO_FAMILY = _MONO_PREFS[0]
+_UI_FAMILY  = _pick_font_family(["Segoe UI Semibold", "Segoe UI", "Calibri",
+                                  "Helvetica", "Arial", "TkDefaultFont"])
+_MONO_FAMILY = _pick_font_family(["Consolas", "DejaVu Sans Mono", "Courier New",
+                                  "TkFixedFont"])
 
 FONT_TITLE  = (_UI_FAMILY, 24, "bold")
 FONT_HEAD   = (_UI_FAMILY, 12, "bold")
@@ -970,7 +800,6 @@ class App(tk.Tk):
     SPACER_COL  = 5        # absorbs slack so controls stay left-justified
     HELP_COL    = 6        # per-panel help text sits here, right of the controls
     HELP_W      = 300
-    PREVIEW_MIN_W = 360    # each overlay tab keeps at least this much for its preview
 
     def _register_help(self, card, key):
         """Place this section's help text inside the panel, to the right of the
@@ -991,17 +820,10 @@ class App(tk.Tk):
         self.title("LapStudio")
         self.configure(bg=DARK_BG)
         self.resizable(True, True)
-        # Sized for a normal laptop display: fill it, but never propose a window
-        # bigger than the screen actually is. Panels are tabs now, so the height
-        # is set by the tallest single tab rather than by all of them stacked.
-        self.minsize(1100, 620)
-        try:
-            _sw, _sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        except Exception:
-            _sw, _sh = 1440, 900
-        _w = max(1100, min(1500, _sw - 80))
-        _h = max(620, min(920, _sh - 120))
-        self.geometry(f"{_w}x{_h}+{max(0, (_sw - _w) // 2)}+{max(0, (_sh - _h) // 3)}")
+        # Wider (settings + help panel side by side) but shorter, now that the
+        # per-setting explanations live in the help panel.
+        self.minsize(1180, 620)
+        self.geometry("1280x760")
 
         # State
         self.df          = None
@@ -1013,9 +835,6 @@ class App(tk.Tk):
         self.file_path   = tk.StringVar()
         self.output_dir  = tk.StringVar()
         self.output_name = tk.StringVar(value="ecu_overlay.mp4")
-        # The output is named after the loaded log. This tracks the name the app
-        # derived, so a name typed by hand is never overwritten by a later load.
-        self._auto_output_name = "ecu_overlay.mp4"
         self.t_start_var = tk.StringVar(value="0")
         self.t_end_var   = tk.StringVar(value="0")
         self.max_t_label = tk.StringVar(value="Max: —")
@@ -1055,11 +874,11 @@ class App(tk.Tk):
         self.tm_backdrop  = tk.StringVar(value="Chroma magenta")   # track-map widget
         # Track-map widget options (own settings, independent of the dash)
         self.tm_speed_colour = tk.BooleanVar(value=True)
-        self.tm_amount   = tk.StringVar(value="All")   # All, or a 10..150s window
+        self.tm_amount   = tk.StringVar(value="All")   # All, or Last 10..60s
         # Optional separate lap-data overlay video
         self.gen_lapdata = tk.BooleanVar(value=False)
         self.ld_mode     = tk.StringVar(value="Current lap")
-        self.ld_style    = tk.StringVar(value="Dash 5 · Panels")
+        self.ld_style    = tk.StringVar(value="Panels (Dash 5)")
         self.ld_backdrop = tk.StringVar(value="Chroma magenta")
         # Optional separate steering-wheel overlay video — removed (renderer
         # dropped). Placeholder vars kept absent; no wheel controls remain.
@@ -1078,10 +897,7 @@ class App(tk.Tk):
         self.lap_sf_radius   = tk.StringVar(value="30")
         self.lap_lat_col     = tk.StringVar(value="")
         self.lap_lon_col     = tk.StringVar(value="")
-        self.style_var       = tk.StringVar(value=_R.DASH_NAMES[0])
-        # Trim the output to the dash panel where the panel does not fill the
-        # frame, so the result needs no chroma keying at all.
-        self.crop_to_content = tk.BooleanVar(value=True)
+        self.style_var       = tk.StringVar(value="Dash 1 (white gauge)")
         self.style2_var      = tk.StringVar(value="None")
         self._file_info_var  = tk.StringVar(value="")
         self.lap_text        = tk.StringVar(value="Load a file to detect laps.")
@@ -1090,15 +906,6 @@ class App(tk.Tk):
         self._cancel_flag = False
         self._dot_labels  = {}   # channel -> Label widget
         self._all_inputs  = []   # widgets to disable during render
-        # Live per-tab preview state
-        self._pv_time_lbl = tk.StringVar(value="--:--")
-        self._pv_var      = tk.DoubleVar(value=0.0)   # shared 0..1 scrub position
-        self._pv_scales   = []
-        self._pv_panes    = {}
-        self._pv_holders  = {}
-        self._pv_kind     = None
-        self._pv_job      = None
-        self._pv_last_box = None
 
         self._build_ui()
 
@@ -1108,189 +915,46 @@ class App(tk.Tk):
                 "Run:  pip install pandas numpy pillow aggdraw\n"
                 "then restart this program.")
 
-    def _style_ttk(self, _sty=None):
-        """Apply the current palette to the ttk widgets (combobox, notebook,
-        scrollbar, progress bar, scale). Re-run when the theme changes."""
-        _sty = _sty or ttk.Style()
-        try:
-            _sty.theme_use('default')
-        except Exception:
-            pass
+    def _build_ui(self):
+        # ── Apply ttk styles FIRST before any widgets are created ─────────
+        _sty = ttk.Style()
+        _sty.theme_use('default')
         _sty.configure("TCombobox",
             fieldbackground=DARK_PANEL, background=DARK_PANEL,
             foreground=TEXT_PRI, selectbackground=DARK_PANEL,
-            selectforeground=TEXT_PRI, arrowcolor=ACCENT,
+            selectforeground=TEXT_PRI, arrowcolor=TEXT_PRI,
             insertcolor=TEXT_PRI, bordercolor=BORDER_COL,
             lightcolor=BORDER_COL, darkcolor=BORDER_COL)
         _sty.map("TCombobox",
             fieldbackground=[('readonly', DARK_PANEL), ('!readonly', DARK_PANEL)],
             foreground=[('readonly', TEXT_PRI), ('!readonly', TEXT_PRI)],
             selectbackground=[('readonly', DARK_PANEL)],
-            selectforeground=[('readonly', TEXT_PRI)],
-            bordercolor=[('focus', FILL_COL)])
+            selectforeground=[('readonly', TEXT_PRI)])
         self.option_add("*TCombobox*Listbox.background", DARK_PANEL)
         self.option_add("*TCombobox*Listbox.foreground", TEXT_PRI)
-        self.option_add("*TCombobox*Listbox.selectBackground", FILL_COL)
-        self.option_add("*TCombobox*Listbox.selectForeground", ON_FILL)
-        _sty.configure("TNotebook", background=DARK_BG, borderwidth=0,
-                       tabmargins=(6, 4, 6, 0))
-        _sty.configure("TNotebook.Tab", background=DARK_CARD, foreground=TEXT_SEC,
-                       padding=(18, 8), font=FONT_HEAD, borderwidth=0)
-        _sty.map("TNotebook.Tab",
-                 background=[("selected", FILL_COL)],
-                 foreground=[("selected", ON_FILL)],
-                 expand=[("selected", (0, 0, 0, 0))])
-        _sty.configure("TScrollbar", background=DARK_CARD, troughcolor=DARK_BG,
-                       bordercolor=DARK_BG, arrowcolor=TEXT_SEC)
-        _sty.configure("ECU.Horizontal.TProgressbar",
-                       troughcolor=DARK_PANEL, background=FILL_COL,
-                       bordercolor=BORDER_COL, lightcolor=FILL_COL,
-                       darkcolor=FILL_COL)
-        _sty.configure("TScale", background=DARK_CARD, troughcolor=DARK_PANEL)
-        return _sty
-
-    def _apply_theme(self, name, save=True):
-        """Switch theme live: rebind the palette, restyle ttk, then walk the
-        widget tree swapping every old palette colour for its new counterpart.
-
-        A tree walk (rather than rebuilding the UI) keeps all state - loaded log,
-        channel mapping, scrub position - exactly where it was.
-        """
-        old = dict(_theme_colours(THEME_NAME))
-        _bind_theme(name)
-        new = dict(_theme_colours(THEME_NAME))
-        remap = {old[k].lower(): new[k] for k in old if k in new}
-        self.configure(bg=DARK_BG)
-        self._style_ttk()
-
-        _OPTS = ("background", "bg", "foreground", "fg", "activebackground",
-                 "activeforeground", "disabledforeground", "highlightbackground",
-                 "highlightcolor", "selectcolor", "insertbackground",
-                 "troughcolor", "selectbackground", "selectforeground",
-                 "readonlybackground")
-
-        def _walk(w):
-            for opt in _OPTS:
-                try:
-                    cur = str(w.cget(opt))
-                except Exception:
-                    continue
-                if not cur:
-                    continue
-                tgt = remap.get(cur.lower())
-                if tgt and tgt != cur:
-                    try:
-                        w.configure(**{opt: tgt})
-                    except Exception:
-                        pass
-            for ch in w.winfo_children():
-                _walk(ch)
-
-        _walk(self)
-        if hasattr(self, "_theme_btn"):
-            self._theme_btn.config(
-                text="☀ Light theme" if THEME_NAME == "dark" else "☾ Dark theme")
-        if save:
-            _save_pref("theme", THEME_NAME)
-        # The preview backdrops are unrelated to the UI theme, but the panes show
-        # placeholder text in theme colours, so refresh whatever is on screen.
-        self._schedule_preview(80)
-
-    def _toggle_theme(self):
-        self._apply_theme("light" if THEME_NAME == "dark" else "dark")
-
-    def _build_ui(self):
-        # Font families can only be enumerated once a root exists, which it now
-        # does - do it before any widget is built so everything picks them up.
-        _resolve_fonts()
-        # ── Apply ttk styles FIRST before any widgets are created ─────────
-        _sty = self._style_ttk()
-
+        self.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+        self.option_add("*TCombobox*Listbox.selectForeground", DARK_BG)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
-        # ── Window chrome: title, tab row, global bar ──────────────────────
-        # Panels used to be stacked in one long scrolling column, which made the
-        # window very tall once the per-panel help text was added. Each panel is
-        # now a tab, and the settings that apply to the whole job (time range,
-        # fps, output, render) live in a bar that stays visible on every tab.
-        self.rowconfigure(0, weight=0)     # title
-        self.rowconfigure(1, weight=1)     # notebook
-        self.rowconfigure(2, weight=0)     # global bar
+        # ── Scrollable canvas wrapper ──────────────────────────────────────
+        canvas = tk.Canvas(self, bg=DARK_BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        canvas.grid(row=0, column=0, sticky="nsew")
+        self._scroll_canvas = canvas   # used by _fix_combo for wheel handling
 
-        title_f = tk.Frame(self, bg=DARK_BG, padx=18, pady=(12))
-        title_f.grid(row=0, column=0, columnspan=2, sticky="ew")
-        tk.Label(title_f, text="◈ LAP STUDIO", font=FONT_TITLE,
-                 bg=DARK_BG, fg=ACCENT).pack(side="left")
-        tk.Label(title_f, text=" TELEMETRY OVERLAY", font=FONT_TITLE,
-                 bg=DARK_BG, fg=TEXT_PRI).pack(side="left")
+        self._help_sections = []      # kept for compatibility (help is per-panel)
 
-        # Loading indicator — animates while a file (especially an AIM .drk,
-        # which goes out to the AIM DLL) is being read.
-        self._loading_var = tk.StringVar(value="")
-        self._loading_lbl = tk.Label(title_f, textvariable=self._loading_var,
-                                     font=FONT_HEAD, bg=DARK_BG, fg=ACCENT)
-        self._loading_lbl.pack(side="left", padx=(24, 0))
-        self._loading_job = None
-        self._loading_msg = ""
-        self._loading_i = 0
+        outer = tk.Frame(canvas, bg=DARK_BG, padx=18, pady=18)
+        outer.columnconfigure(0, weight=1)
+        _canvas_window = canvas.create_window((0, 0), window=outer, anchor="nw")
 
-        nb = ttk.Notebook(self)
-        nb.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=12)
-        self._nb = nb
-        self._tab_canvases = {}
-        self._scroll_canvas = None      # set per tab; see _active_canvas
-
-        def _make_tab(label):
-            """Add a notebook tab whose content scrolls if it does not fit."""
-            holder = tk.Frame(nb, bg=DARK_BG)
-            nb.add(holder, text=label)
-            holder.columnconfigure(0, weight=1)
-            holder.rowconfigure(0, weight=1)
-            cv = tk.Canvas(holder, bg=DARK_BG, highlightthickness=0)
-            sb = ttk.Scrollbar(holder, orient="vertical", command=cv.yview)
-            cv.configure(yscrollcommand=sb.set)
-            cv.grid(row=0, column=0, sticky="nsew")
-            sb.grid(row=0, column=1, sticky="ns")
-            inner = tk.Frame(cv, bg=DARK_BG, padx=12, pady=12)
-            inner.columnconfigure(0, weight=1)
-            _win = cv.create_window((0, 0), window=inner, anchor="nw")
-            cv.bind("<Configure>",
-                    lambda e, c=cv, w=_win: c.itemconfig(w, width=e.width))
-            inner.bind("<Configure>",
-                       lambda e, c=cv: c.configure(scrollregion=c.bbox("all")))
-            self._tab_canvases[str(holder)] = cv
-            return inner
-
-        def _split_tab(inner):
-            """Controls on the left, live preview on the right."""
-            inner.columnconfigure(0, weight=0, minsize=self.LABEL_COL_W + self.HELP_W + 200)
-            inner.columnconfigure(1, weight=1, minsize=self.PREVIEW_MIN_W)
-            inner.rowconfigure(0, weight=1)
-            left = tk.Frame(inner, bg=DARK_BG)
-            left.grid(row=0, column=0, sticky="nw")
-            left.columnconfigure(0, weight=1)
-            right = tk.Frame(inner, bg=DARK_BG)
-            right.grid(row=0, column=1, sticky="nsew", padx=(16, 0))
-            right.columnconfigure(0, weight=1)
-            right.rowconfigure(0, weight=1)
-            return left, right
-
-        tab_data = _make_tab("  Data  ")
-        tab_laps = _make_tab("  Laps  ")
-        _dash_in = _make_tab("  Dash  ")
-        _gp_in   = _make_tab("  G-Plot  ")
-        _tm_in   = _make_tab("  Track Map  ")
-        _ld_in   = _make_tab("  Lap Data  ")
-        tab_dash, pv_dash = _split_tab(_dash_in)
-        tab_gp,   pv_gp   = _split_tab(_gp_in)
-        tab_tm,   pv_tm   = _split_tab(_tm_in)
-        tab_ld,   pv_ld   = _split_tab(_ld_in)
-        self._tab_keys = {}             # notebook tab id -> preview kind
-        for _hold, _kind in ((_dash_in, "dash"), (_gp_in, "gplot"),
-                             (_tm_in, "trackmap"), (_ld_in, "lapdata")):
-            self._tab_keys[str(_hold.master.master)] = _kind
-
+        def _on_frame_configure(e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        def _on_canvas_configure(e):
+            canvas.itemconfig(_canvas_window, width=e.width)
         # Track whether the pointer is over a combobox or its (open) dropdown
         # list, so the mouse wheel scrolls the list rather than the whole app.
         _combo_cls = ('TCombobox', 'Combobox', 'Listbox', 'ComboboxPopdownFrame')
@@ -1334,26 +998,41 @@ class App(tk.Tk):
         def _on_mousewheel(e):
             if _pointer_over_dropdown(e):
                 return          # let the combobox / its list handle the wheel
-            cv = self._active_canvas()
-            if cv is not None:
-                cv.yview_scroll(int(-1*(e.delta/120)), "units")
+            canvas.yview_scroll(int(-1*(e.delta/120)), "units")
         def _on_mousewheel_linux(e):
             if _pointer_over_dropdown(e):
                 return
-            cv = self._active_canvas()
-            if cv is not None:
-                cv.yview_scroll(-1 if e.num == 4 else 1, "units")
+            canvas.yview_scroll(-1 if e.num==4 else 1, "units")
 
-        self.bind_all("<MouseWheel>", _on_mousewheel)
-        self.bind_all("<Button-4>", _on_mousewheel_linux)
-        self.bind_all("<Button-5>", _on_mousewheel_linux)
-        self.bind_all("<Enter>", _on_enter, add="+")
-        self.bind_all("<Leave>", _on_leave, add="+")
-        nb.bind("<<NotebookTabChanged>>", lambda e: self._on_tab_changed())
+        outer.bind("<Configure>", _on_frame_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind_all("<Button-4>", _on_mousewheel_linux)
+        canvas.bind_all("<Button-5>", _on_mousewheel_linux)
+        canvas.bind_all("<Enter>", _on_enter, add="+")
+        canvas.bind_all("<Leave>", _on_leave, add="+")
+
+        # ── TITLE ─────────────────────────────────────────────────────────────
+        title_f = tk.Frame(outer, bg=DARK_BG)
+        title_f.grid(row=0, column=0, sticky="ew", pady=(0,16))
+        tk.Label(title_f, text="◈ LAP STUDIO", font=FONT_TITLE,
+                 bg=DARK_BG, fg=ACCENT).pack(side="left")
+        tk.Label(title_f, text=" TELEMETRY OVERLAY", font=FONT_TITLE,
+                 bg=DARK_BG, fg=TEXT_PRI).pack(side="left")
+
+        # Loading indicator — animates while a file (especially an AIM .drk,
+        # which goes out to the AIM DLL) is being read.
+        self._loading_var = tk.StringVar(value="")
+        self._loading_lbl = tk.Label(title_f, textvariable=self._loading_var,
+                                     font=FONT_HEAD, bg=DARK_BG, fg=ACCENT)
+        self._loading_lbl.pack(side="left", padx=(24, 0))
+        self._loading_job = None
+        self._loading_msg = ""
+        self._loading_i = 0
 
         # ── SECTION 1: FILE SELECTION ─────────────────────────────────────────
-        self._section(tab_data, 0, "FILE SELECTION")
-        fs = self._card(tab_data, 1)
+        self._section(outer, 1, "① FILE SELECTION")
+        fs = self._card(outer, 2)
         self._register_help(fs, "file")
         fs.columnconfigure(1, weight=1)
 
@@ -1398,15 +1077,16 @@ class App(tk.Tk):
         self._dll_row_frame.grid_remove()   # hidden until XRK file selected
 
         # ── SECTION 2: COLUMN MAPPING ─────────────────────────────────────────
-        self._section(tab_data, 2, "CHANNEL MAPPING")
-        self.col_frame = self._card(tab_data, 3)
+        self._section(outer, 3, "② CHANNEL MAPPING")
+        self.col_frame = self._card(outer, 4)
         self._register_help(self.col_frame, "channels")
         self._build_col_mapping([])   # empty until file loaded
         # collect all lockable inputs after build
         self.after(100, self._collect_inputs)
 
         # ── SECTION 3: LAP DETECTION ──────────────────────────────────────────
-        lap_card = self._card(tab_laps, 0)
+        self._section(outer, 5, "③ LAP DETECTION")
+        lap_card = self._card(outer, 6)
         self._register_help(lap_card, "lap")
         lap_card.columnconfigure(3, weight=1)
 
@@ -1617,26 +1297,18 @@ class App(tk.Tk):
         _lap_frame.grid(row=5, column=0, columnspan=5, sticky="nsew", pady=(6,0))
         _lap_sb = tk.Scrollbar(_lap_frame, orient="vertical", bg=DARK_PANEL)
         _lap_sb.pack(side="right", fill="y")
-        # Single narrow column now, so make the box tall rather than wide.
-        self.lap_info = tk.Text(_lap_frame, height=24, width=32, font=FONT_MONO,
+        self.lap_info = tk.Text(_lap_frame, height=14, width=96, font=FONT_MONO,
                                  bg=DARK_CARD, fg=ACCENT2, relief="flat",
                                  wrap="none", state="disabled",
                                  yscrollcommand=_lap_sb.set)
         self.lap_info.pack(side="left", fill="both", expand=True)
         _lap_sb.config(command=self.lap_info.yview)
 
-        # ── GLOBAL BAR: output range, fps, preview scrubber, render ─────────
-        # These apply to the whole job rather than one overlay, so they sit below
-        # the tabs and stay visible whichever tab is open.
-        bar = tk.Frame(self, bg=DARK_CARD, padx=14, pady=10,
-                       highlightbackground=BORDER_COL, highlightthickness=1)
-        bar.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(10, 12))
-        bar.columnconfigure(0, weight=0)
-        bar.columnconfigure(1, weight=1)
-        self._global_bar = bar
-
-        tr = tk.Frame(bar, bg=DARK_CARD)
-        tr.grid(row=0, column=0, sticky="nw")
+        # ── SECTION 5: STYLE ──────────────────────────────────────────────
+        # ── SECTION 4: TIME RANGE ────────────────────────────────────────────
+        self._section(outer, 7, "④ OUTPUT")
+        tr = self._card(outer, 8)
+        self._register_help(tr, "output")
 
         tk.Label(tr, text="Start (s):", font=FONT_HEAD, bg=DARK_CARD, fg=TEXT_SEC).grid(
             row=0, column=0, sticky="w", padx=(0,8))
@@ -1687,7 +1359,7 @@ class App(tk.Tk):
                   font=FONT_SMALL, bg=DARK_PANEL, fg=ACCENT,
                   relief="flat", cursor="hand2",
                   command=_set_start_to_first_lap).grid(
-            row=0, column=5, sticky="w", padx=(12,0))
+            row=0, column=4, sticky="w", padx=(12,0))
 
         tk.Label(tr, text="Output FPS:", font=FONT_HEAD, bg=DARK_CARD, fg=TEXT_SEC).grid(
             row=1, column=0, sticky="w", padx=(0,8), pady=(8,0))
@@ -1705,24 +1377,32 @@ class App(tk.Tk):
         # ── ⑤ DASH STYLE ──────────────────────────────────────────────────────
         # Everything that shapes the MAIN dashboard render lives here, including
         # the dash's built-in G-trace / track trail (trail length + speed colour).
-        sty = self._card(tab_dash, 0)
+        self._section(outer, 9, "⑤ DASH STYLE")
+        sty = self._card(outer, 10)
         self._register_help(sty, "dash")
         tk.Label(sty, text="Visual Style:", font=FONT_HEAD,
                  bg=DARK_CARD, fg=TEXT_SEC).grid(row=0, column=0, sticky="w", padx=(0,10))
         _style_cb = ttk.Combobox(sty, textvariable=self.style_var,
-                      values=list(_R.DASH_NAMES),
-                      width=38, font=FONT_MONO, state="readonly")
+                      values=["Dash 1 (white gauge)", "Dash 2 (black gauge)",
+                              "Dash 3", "Dash 4", "Dash 5", "Dash 6 (Logger)",
+                              "Dash 6b (Wide Logger)",
+                              "Dash 7 (HUD)",
+                              "Dash 9 (Triple)",
+                              "Dash 10 (Arc)",
+                              "Dash 8", "Dash 8 (Chroma)",
+                              "Dash 8b (bars inside)", "Dash 8b (bars inside, Chroma)",
+                              "Vertical Text", "Horizontal Text"],
+                      width=22, font=FONT_MONO, state="readonly")
         _style_cb.grid(row=0, column=1, sticky="w")
         self._fix_combo(_style_cb)
 
         # Main-dash built-in trace trail: length + speed colour
-        _trail_lbl = tk.Label(sty, text="Dash trail:", font=FONT_HEAD, bg=DARK_CARD,
-                              fg=TEXT_SEC)
-        _trail_lbl.grid(row=1, column=0, sticky="w", padx=(0,10), pady=(10,0))
+        tk.Label(sty, text="Dash trail:", font=FONT_HEAD, bg=DARK_CARD,
+                 fg=TEXT_SEC).grid(row=1, column=0, sticky="w", padx=(0,10), pady=(10,0))
         _trail_wrap = tk.Frame(sty, bg=DARK_CARD)
         _trail_wrap.grid(row=1, column=1, columnspan=3, sticky="w", pady=(10,0))
         trail_combo = ttk.Combobox(_trail_wrap, textvariable=self.g_trail_secs,
-                                    values=_TRAIL_SECS,
+                                    values=[str(i) for i in range(1,6)] + [str(i) for i in range(5,125,5)],
                                     width=6, font=FONT_MONO, state="readonly")
         trail_combo.pack(side="left")
         trail_combo.set("40")
@@ -1735,33 +1415,18 @@ class App(tk.Tk):
                         font=FONT_SMALL, relief="flat", cursor="hand2").pack(
             side="left", padx=(20,0))
 
-        # Remember these so they can be hidden for dashes with no trail feature.
-        self._trail_lbl_w = _trail_lbl
-        self._trail_row_w = _trail_wrap
-
         # Dashboard backdrop - the chroma-key / background colour of the dash.
-        self._bd_lbl = tk.Label(sty, text="Backdrop:", font=FONT_HEAD, bg=DARK_CARD,
-                                fg=TEXT_SEC)
-        self._bd_lbl.grid(row=3, column=0, sticky="w", padx=(0,10), pady=(10,0))
+        tk.Label(sty, text="Backdrop:", font=FONT_HEAD, bg=DARK_CARD,
+                 fg=TEXT_SEC).grid(row=3, column=0, sticky="w", padx=(0,10), pady=(10,0))
         _bd_cb = ttk.Combobox(sty, textvariable=self.backdrop_var, state="readonly",
                               values=["Chroma magenta", "Chroma green", "Dark"],
                               width=18, font=FONT_MONO)
         _bd_cb.grid(row=3, column=1, sticky="w", pady=(10,0))
         self._fix_combo(_bd_cb)
-        self._bd_cb = _bd_cb
-
-        # Crop to the panel: for dashes whose graphic does not fill the frame,
-        # the output can be trimmed to the panel so no chroma keying is needed.
-        self._crop_chk = tk.Checkbutton(
-            sty, text="Crop frame to the panel (no chroma key needed)",
-            variable=self.crop_to_content,
-            bg=DARK_CARD, fg=ACCENT2, activebackground=DARK_CARD,
-            activeforeground=ACCENT2, selectcolor=DARK_PANEL,
-            font=FONT_SMALL, relief="flat", cursor="hand2")
-        self._crop_chk.grid(row=4, column=0, columnspan=4, sticky="w", pady=(8,0))
 
         # ── ⑥ G-PLOT STYLE (standalone G-force trace overlay) ──────────────────
-        gp = self._card(tab_gp, 0)
+        self._section(outer, 11, "⑥ G-PLOT STYLE")
+        gp = self._card(outer, 12)
         self._register_help(gp, "gplot")
         tk.Checkbutton(gp, text="Generate G-force trace graphic",
                         variable=self.gen_gtrace,
@@ -1779,7 +1444,7 @@ class App(tk.Tk):
         tk.Label(gp, text="Trail time (s):", font=FONT_SMALL, bg=DARK_CARD,
                  fg=TEXT_SEC).grid(row=3, column=0, sticky="w", padx=(0,10), pady=(2,2))
         _gp_trail = ttk.Combobox(gp, textvariable=self.gtrace_trail, state="readonly",
-                     values=_TRAIL_SECS,
+                     values=[str(i) for i in range(1,6)] + [str(i) for i in range(5,125,5)],
                      width=8, font=FONT_MONO)
         _gp_trail.grid(row=3, column=1, sticky="w", pady=(2,2))
         _gp_trail.set("40")
@@ -1798,18 +1463,17 @@ class App(tk.Tk):
                               width=8, font=FONT_MONO)
         _gp_gm.grid(row=5, column=1, sticky="w", pady=(2,2))
         self._fix_combo(_gp_gm)
-        self._gp_bd_lbl = tk.Label(gp, text="Backdrop:", font=FONT_SMALL,
-                                   bg=DARK_CARD, fg=TEXT_SEC)
-        self._gp_bd_lbl.grid(row=7, column=0, sticky="w", padx=(0,10), pady=(2,2))
+        tk.Label(gp, text="Backdrop:", font=FONT_SMALL, bg=DARK_CARD, fg=TEXT_SEC).grid(
+            row=7, column=0, sticky="w", padx=(0,10), pady=(2,2))
         _gp_bd = ttk.Combobox(gp, textvariable=self.gt_backdrop, state="readonly",
                               values=["Chroma magenta", "Chroma green", "Dark"],
                               width=18, font=FONT_MONO)
         _gp_bd.grid(row=7, column=1, columnspan=2, sticky="w", pady=(2,4))
         self._fix_combo(_gp_bd)
-        self._gp_bd_cb = _gp_bd
 
         # ── ⑦ TRACK MAP STYLE (standalone track-map overlay) ───────────────────
-        tm = self._card(tab_tm, 0)
+        self._section(outer, 13, "⑦ TRACK MAP STYLE")
+        tm = self._card(outer, 14)
         self._register_help(tm, "trackmap")
         tk.Checkbutton(tm, text="Generate track map graphic",
                         variable=self.gen_trackmap,
@@ -1832,15 +1496,14 @@ class App(tk.Tk):
         tk.Label(tm, text="Map amount:", font=FONT_SMALL, bg=DARK_CARD, fg=TEXT_SEC).grid(
             row=5, column=0, sticky="w", padx=(0,10), pady=(2,2))
         _tm_amt = ttk.Combobox(tm, textvariable=self.tm_amount, state="readonly",
-                               values=(["All"]
-                                       + [f"{n}s window" for n in range(10, 61, 10)]
-                                       + [f"{n}s window" for n in (75, 90, 105, 120, 135, 150)]),
+                               values=["All"] + [f"{n}s window" for n in range(10, 61, 10)],
                                width=18, font=FONT_MONO)
         _tm_amt.grid(row=5, column=1, columnspan=2, sticky="w", pady=(2,4))
         self._fix_combo(_tm_amt)
 
         # ── ⑧ LAP DATA STYLE (standalone lap-data overlay) ────────────────────
-        ld = self._card(tab_ld, 0)
+        self._section(outer, 15, "⑧ LAP DATA STYLE")
+        ld = self._card(outer, 16)
         self._register_help(ld, "lapdata")
         tk.Checkbutton(ld, text="Generate lap data graphic",
                         variable=self.gen_lapdata,
@@ -1858,13 +1521,9 @@ class App(tk.Tk):
         tk.Label(ld, text="Graphic style:", font=FONT_SMALL, bg=DARK_CARD, fg=TEXT_SEC).grid(
             row=3, column=0, sticky="w", padx=(0,10), pady=(2,2))
         _ld_sty = ttk.Combobox(ld, textvariable=self.ld_style, state="readonly",
-                               values=["Dash 1 · Cells, light",
-                                       "Dash 2 · Cells, dark",
-                                       "Dash 5 · Panels",
-                                       "Dash 6 · Logger rows",
-                                       "Dash 7 · HUD bar",
-                                       "Dash 8b · Slanted panels",
-                                       "Dash 10 · Plain text"],
+                               values=["Panels (Dash 5)", "HUD (Dash 7/9)",
+                                       "Logger (Dash 6)", "Plain (Dash 10)",
+                                       "Cells dark (Dash 2)", "Cells light (Dash 1)"],
                                width=22, font=FONT_MONO)
         _ld_sty.grid(row=3, column=1, columnspan=2, sticky="w", pady=(2,2))
         self._fix_combo(_ld_sty)
@@ -1882,8 +1541,11 @@ class App(tk.Tk):
         self._style_info_lbl.grid(row=5, column=0, columnspan=4, sticky="w", pady=(4,0))
         def _on_style_change(*_):
             _sn1 = self.style_var.get()
-            _fw, _fh = _R.style_frame_size(_R.STYLES.get(_sn1))
-            _r = f"{_fw}×{_fh}"
+            if _sn1 in ("Vertical Text", "Horizontal Text"): _r="1920×1080"
+            elif _sn1 == "Dash 7 (HUD)": _r="1920×365"
+            elif _sn1 == "Dash 9 (Triple)": _r="1920×405"
+            elif _sn1 == "Dash 10 (Arc)": _r="2560×750"
+            else: _r="1920×750"
             _data_fps2 = getattr(self, "_data_fps", None)
             _sel_fps = self.fps_var.get() if hasattr(self, "fps_var") else ""
             if _data_fps2 and hasattr(self, "_file_info_var"):
@@ -1898,18 +1560,18 @@ class App(tk.Tk):
         if hasattr(self, "fps_var"):
             self.fps_var.trace_add("write", _on_style_change)
 
-        # ── Render controls, in the global bar ──────────────────────────────
-        gen = tk.Frame(bar, bg=DARK_CARD)
-        gen.grid(row=0, column=1, sticky="new", padx=(24, 0))
-        gen.columnconfigure(0, weight=1)
+        # ── ⑨ GENERATE ─────────────────────────────────────────────────────
+        self._section(outer, 17, "⑨ GENERATE")
+        gen = self._card(outer, 18)
+        self._register_help(gen, "generate")
 
         btn_row = tk.Frame(gen, bg=DARK_CARD)
-        btn_row.grid(row=0, column=0, sticky="ew", pady=(0,8))
+        btn_row.grid(row=0, column=0, sticky="ew", pady=(0,12))
         btn_row.columnconfigure(0, weight=1)
         self.gen_btn = self._btn(btn_row, "▶  GENERATE VIDEO", self._start_render,
                                   big=True, color=ACCENT)
         self.gen_btn.grid(row=0, column=0, sticky="ew", padx=(0,8))
-        self.preview_btn = self._btn(btn_row, "🖼  PREVIEW ALL", self._preview_frame,
+        self.preview_btn = self._btn(btn_row, "🖼  PREVIEW FRAME", self._preview_frame,
                                       big=True, color=ACCENT2)
         self.preview_btn.grid(row=0, column=1, padx=(8,8))
         self.cancel_btn = self._btn(btn_row, "✕  CANCEL", self._cancel_render,
@@ -1918,89 +1580,20 @@ class App(tk.Tk):
         self.cancel_btn.config(state="disabled", fg=TEXT_SEC)
 
         # Progress bar
+        style = ttk.Style()
+        style.configure("ECU.Horizontal.TProgressbar",
+                        troughcolor=DARK_PANEL, background=ACCENT,
+                        bordercolor=BORDER_COL, lightcolor=ACCENT, darkcolor=ACCENT)
         self.pbar = ttk.Progressbar(gen, variable=self.progress, maximum=100,
                                      style="ECU.Horizontal.TProgressbar", length=400)
         self.pbar.grid(row=1, column=0, sticky="ew", pady=(0,8))
 
         tk.Label(gen, textvariable=self.status_var, font=FONT_SMALL,
-                 bg=DARK_CARD, fg=TEXT_SEC, wraplength=760, justify="left").grid(
+                 bg=DARK_CARD, fg=TEXT_SEC, wraplength=700, justify="left").grid(
             row=2, column=0, sticky="w")
-
-        # Bottom-left corner: theme toggle, and the bar's help behind a "?"
-        # (the bar has no room for a help column of its own).
-        _corner = tk.Frame(bar, bg=DARK_CARD)
-        _corner.grid(row=1, column=0, sticky="w", pady=(8, 0))
-        self._theme_btn = tk.Button(
-            _corner,
-            text="☀ Light theme" if THEME_NAME == "dark" else "☾ Dark theme",
-            font=FONT_SMALL, bg=DARK_PANEL, fg=ACCENT, activebackground=BORDER_COL,
-            activeforeground=ACCENT, relief="flat", bd=0, cursor="hand2",
-            padx=10, pady=4, highlightbackground=BORDER_COL, highlightthickness=1,
-            command=self._toggle_theme)
-        self._theme_btn.pack(side="left")
-        tk.Button(_corner, text=" ? ", font=FONT_SMALL, bg=DARK_PANEL, fg=ACCENT,
-                  activebackground=BORDER_COL, activeforeground=ACCENT,
-                  relief="flat", cursor="hand2",
-                  command=lambda: messagebox.showinfo(
-                      "Output and Generate",
-                      self.HELP.get("output", "") + "\n\n" +
-                      self.HELP.get("generate", ""))).pack(side="left", padx=(8, 0))
-
-        # ── Live preview panes, one per overlay tab. Each carries its own copy
-        #    of the time scrubber directly under the picture; they all drive one
-        #    shared value, so scrubbing on one tab moves them all. ────────────
-        self._pv_panes = {}
-        self._pv_holders = {}
-        self._pv_scales = []
-        for _par, _kind, _cap in ((pv_dash, "dash", "DASH PREVIEW"),
-                                  (pv_gp, "gplot", "G-PLOT PREVIEW"),
-                                  (pv_tm, "trackmap", "TRACK MAP PREVIEW"),
-                                  (pv_ld, "lapdata", "LAP DATA PREVIEW")):
-            self._make_preview_pane(_par, _kind, _cap)
-
-        # Any setting that shapes an overlay repreviews the visible tab. Only the
-        # tab on show renders, so a change on another tab costs nothing.
-        for _vn in ("style_var", "style2_var", "g_trail_secs", "g_trail_speed_colour",
-                    "backdrop_var",
-                    "gtrace_form", "gtrace_trail", "gtrace_colour", "gtrace_gmax",
-                    "gt_backdrop", "gen_gtrace",
-                    "tm_speed_colour", "tm_amount", "tm_backdrop", "gen_trackmap",
-                    "ld_mode", "ld_style", "ld_backdrop", "gen_lapdata",
-                    "t_start_var", "t_end_var"):
-            _v = getattr(self, _vn, None)
-            if _v is not None:
-                try:
-                    _v.trace_add("write", lambda *_a: self._schedule_preview())
-                except Exception:
-                    pass
-
-        # Inverting a channel changes the working data itself, so rebuild rather
-        # than just repreviewing (the rebuild schedules a preview when it lands).
-        for _vn in ("invert_glat", "invert_glong", "invert_throttle"):
-            _v = getattr(self, _vn, None)
-            if _v is not None:
-                try:
-                    _v.trace_add("write", lambda *_a: self._schedule_rebuild(120))
-                except Exception:
-                    pass
-
-        for _vn in ("style_var", "crop_to_content"):
-            _v = getattr(self, _vn, None)
-            if _v is not None:
-                try:
-                    _v.trace_add("write", self._sync_dash_controls)
-                except Exception:
-                    pass
-        try:
-            self.gtrace_form.trace_add("write", self._sync_gplot_controls)
-        except Exception:
-            pass
 
         # Context-sensitive help: bind every registered section (and children)
         self._wire_help()
-        self._sync_dash_controls()
-        self._sync_gplot_controls()
-        self._on_tab_changed()
 
     # ── UI helpers ─────────────────────────────────────────────────────────────
     def _section(self, parent, row, text):
@@ -2191,27 +1784,6 @@ class App(tk.Tk):
         if not self.output_dir.get():
             self.output_dir.set(os.path.dirname(path))
         self._load_file(path)
-
-    def _set_output_name_from_log(self, path):
-        """Name the output video after the log: "Taupo R1.csv" -> "Taupo R1.mp4".
-
-        Only replaces a name this app derived (or the default), so if the name has
-        been typed by hand it survives loading another log.
-        """
-        try:
-            # Split on both separators: a path can carry the other platform's
-            # slashes (pasted, or a log path saved on another machine).
-            base = str(path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-            stem = os.path.splitext(base)[0].strip()
-        except Exception:
-            return
-        if not stem:
-            return
-        cur = (self.output_name.get() or "").strip()
-        if cur and cur != getattr(self, "_auto_output_name", "ecu_overlay.mp4"):
-            return
-        self._auto_output_name = f"{stem}.mp4"
-        self.output_name.set(self._auto_output_name)
 
     def _browse_output(self):
         path = filedialog.askdirectory(title="Select Output Folder")
@@ -2533,8 +2105,12 @@ class App(tk.Tk):
         # Set fps_var to match data rate (user can override)
         if hasattr(self, "_file_info_var"):
             _style_now = self.style_var.get() if hasattr(self, "style_var") else ""
-            _fw, _fh = _R.style_frame_size(_R.STYLES.get(_style_now))
-            _res = f"{_fw}×{_fh}"
+            if _style_now in ("Style 7", "Style 8"): _res="1920×1080"
+            elif self.style2_var.get() not in ("None","") and hasattr(self,"style2_var"): _res="1920×1080"
+            elif self.style_var.get() == "Dash 7 (HUD)": _res="1920×365"
+            elif self.style_var.get() == "Dash 9 (Triple)": _res="1920×405"
+            elif self.style_var.get() == "Dash 10 (Arc)": _res="1920×500"
+            else: _res="1920×750"
             _sel_fps_now = self.fps_var.get() if hasattr(self,"fps_var") else fps_resample
             self._file_info_var.set(
                 f"data: {fps_resample} fps  ·  render: {_sel_fps_now} fps  ·  "
@@ -2725,7 +2301,7 @@ class App(tk.Tk):
         """For Dash 10 (Arc): supply the full-lap GPS path to the renderer for
         its mini track map. Safe no-op if no GPS columns are available."""
         try:
-            if not (_R.STYLES.get(self.style_var.get()) or {}).get("style32_layout"):
+            if self.style_var.get() != "Dash 10 (Arc)":
                 return
             latc = self.lap_lat_col.get(); lonc = self.lap_lon_col.get()
             if latc and lonc and latc in rows.columns and lonc in rows.columns:
@@ -3002,7 +2578,12 @@ class App(tk.Tk):
             self._preview_dual()
             return
 
-        resolution = _R.style_frame_size(_R.STYLES.get(_style_now))
+        if _style_now in ("Style 7", "Style 8"):
+            resolution = (1920, 1080)
+        elif _style_now == "Dash 10 (Arc)":
+            resolution = (2560, 750)     # wide frame: side margins for corner text
+        else:
+            resolution = (1920, 750)
         out_w, out_h = resolution
         _nat_h = int(_R.H_VID * (out_w / _R.W_VID))
         if out_h < _nat_h - 2:
@@ -3012,7 +2593,7 @@ class App(tk.Tk):
             scale = out_w / _R.W_VID
             out_h_actual = int(_R.H_VID * scale)
 
-        P = self._apply_backdrop_to_P(_R.STYLES.get(_style_now, _R.STYLES[_R.DASH_NAMES[0]]))
+        P = self._apply_backdrop_to_P(_R.STYLES.get(_style_now, _R.STYLES["Dash 1 (white gauge)"]))
 
         import math as _math
         rows = self._working_rows
@@ -3065,7 +2646,7 @@ class App(tk.Tk):
         t_now = float(row['ts'])
         trace = rows[(rows['ts'] >= t_now - g_trail) & (rows['ts'] <= t_now)]
         # Style 14 uses fixed 10s trail regardless of g_trail setting
-        if _R.style_trail_fixed_secs(_R.STYLES.get(_style_now)):
+        if _style_now in ("Style 14", "Dash 6 (Logger)"):
             trace = rows[(rows['ts'] >= t_now - 10.0) & (rows['ts'] <= t_now)]
 
         # 1s peak RPM
@@ -3333,27 +2914,6 @@ class App(tk.Tk):
             self.output_dir.set(os.path.dirname(path))
         self._load_file(path)
 
-    def _set_output_name_from_log(self, path):
-        """Name the output video after the log: "Taupo R1.csv" -> "Taupo R1.mp4".
-
-        Only replaces a name this app derived (or the default), so if the name has
-        been typed by hand it survives loading another log.
-        """
-        try:
-            # Split on both separators: a path can carry the other platform's
-            # slashes (pasted, or a log path saved on another machine).
-            base = str(path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-            stem = os.path.splitext(base)[0].strip()
-        except Exception:
-            return
-        if not stem:
-            return
-        cur = (self.output_name.get() or "").strip()
-        if cur and cur != getattr(self, "_auto_output_name", "ecu_overlay.mp4"):
-            return
-        self._auto_output_name = f"{stem}.mp4"
-        self.output_name.set(self._auto_output_name)
-
     def _browse_output(self):
         path = filedialog.askdirectory(title="Select Output Folder")
         if path:
@@ -3570,7 +3130,6 @@ class App(tk.Tk):
             f"— {n_laps} laps, best {meta.get('best_lap','')}")
 
     def _load_file(self, path):
-        self._set_output_name_from_log(path)
         self.status_var.set("Loading file…")
         self._loading_start("Loading file")
         self.update()
@@ -3675,8 +3234,12 @@ class App(tk.Tk):
         # Set fps_var to match data rate (user can override)
         if hasattr(self, "_file_info_var"):
             _style_now = self.style_var.get() if hasattr(self, "style_var") else ""
-            _fw, _fh = _R.style_frame_size(_R.STYLES.get(_style_now))
-            _res = f"{_fw}×{_fh}"
+            if _style_now in ("Style 7", "Style 8"): _res="1920×1080"
+            elif self.style2_var.get() not in ("None","") and hasattr(self,"style2_var"): _res="1920×1080"
+            elif self.style_var.get() == "Dash 7 (HUD)": _res="1920×365"
+            elif self.style_var.get() == "Dash 9 (Triple)": _res="1920×405"
+            elif self.style_var.get() == "Dash 10 (Arc)": _res="1920×500"
+            else: _res="1920×750"
             _sel_fps_now = self.fps_var.get() if hasattr(self,"fps_var") else fps_resample
             self._file_info_var.set(
                 f"data: {fps_resample} fps  ·  render: {_sel_fps_now} fps  ·  "
@@ -3796,22 +3359,7 @@ class App(tk.Tk):
             else:
                 rows[_ck] = np.nan   # sentinel: not selected → not displayed
 
-        # Channel inversions belong here, not at each consumer: the dash preview
-        # used to invert on its own while the widget previews did not, so a
-        # toggle appeared to do nothing on the G-plot tab.
-        for _icol, _ivar in (("g_lat", self.invert_glat),
-                             ("g_long", self.invert_glong)):
-            if _ivar.get() and _icol in rows.columns:
-                rows[_icol] = -rows[_icol]
-        if self.invert_throttle.get() and "throttle" in rows.columns:
-            rows["throttle"] = 100.0 - rows["throttle"].clip(0, 100)
-
         self._working_rows = rows
-        # Fresh working data: refresh the scrub readout and the visible preview.
-        try:
-            self._on_scrub()
-        except Exception:
-            pass
 
 
     def _update_lap_display(self):
@@ -4016,112 +3564,6 @@ class App(tk.Tk):
         self.cancel_btn.config(state="disabled", fg=TEXT_SEC)
 
 
-    def _render_dash_pil(self, t_preview, laps=None, max_w=None):
-        """Build ONE main-dash frame as a PIL image, from the live settings.
-
-        Shared by the Dash tab's live preview and the popup preview so the two
-        can never disagree about what the render will look like.
-        """
-        import math as _math
-        _style_now = self.style_var.get()
-        resolution = _R.style_frame_size(_R.STYLES.get(_style_now))
-        out_w, out_h = resolution
-        if max_w:
-            # Render smaller for an on-screen preview: much faster, and the
-            # layout is resolution-independent (everything scales off height).
-            _f = max(0.25, min(1.0, float(max_w) / out_w))
-            out_w = max(320, int(out_w * _f))
-            out_h = max(120, int(out_h * _f))
-        _nat_h = int(_R.H_VID * (out_w / _R.W_VID))
-        if out_h < _nat_h - 2:
-            out_h_actual = out_h
-            scale = out_h_actual / _R.H_VID
-        else:
-            scale = out_w / _R.W_VID
-            out_h_actual = int(_R.H_VID * scale)
-
-        P = self._apply_backdrop_to_P(
-            _R.STYLES.get(_style_now, _R.STYLES[_R.DASH_NAMES[0]]))
-
-        _bg_key = (_style_now, self.backdrop_var.get(), out_w, out_h)
-        if getattr(self, "_pv_bg_key", None) != _bg_key:
-            _R._GAUGE_BG_CACHE.clear()
-            self._pv_bg_key = _bg_key
-
-        rows = self._working_rows   # already inverted, see _prepare_working_df
-
-        if laps is None:
-            try:
-                laps = self._compute_laps()
-            except Exception:
-                laps = []
-        self._set_arc_track_path(rows)
-
-        try:
-            g_trail = float(self.g_trail_secs.get())
-        except (ValueError, AttributeError):
-            g_trail = 5.0
-
-        peak_rpm = float(rows['rpm'].max())
-        rpm_max = max(int(_math.ceil(peak_rpm / 1000) * 1000), 6000)
-        # Shift-light bands come off the redline, not the gauge scale (see
-        # renderer_pil.auto_redline).
-        _redline = _R.auto_redline(rows['rpm'].to_numpy())
-        if _redline:
-            rpm_max = max(rpm_max, int(_math.ceil(_redline / 1000.0) * 1000))
-        _peak_spd = float(rows['speed'].max()) if 'speed' in rows.columns else 0.0
-        speed_max = max(60, int(_math.ceil(_peak_spd / 10.0) * 10))
-
-        GS = int(460 * scale); GX = int(10 * scale)
-        cx = GX + GS // 2; cy = out_h_actual // 2; r = GS // 2 - int(12 * scale)
-        _no_gauge = (P.get("dash8_layout") or P.get("style7_layout") or P.get("style8_layout")
-                     or P.get("style11_layout") or P.get("style12_layout")
-                     or P.get("style13_layout") or P.get("style14_layout")
-                     or P.get("style20_layout"))
-        bg = None if _no_gauge else _R._build_gauge_bg(
-            cx, cy, r, w=out_w, h=out_h_actual, rpm_max=rpm_max, P=P)
-
-        idx = (rows['ts'] - t_preview).abs().idxmin()
-        row = rows.iloc[idx]
-        t_now = float(row['ts'])
-        trace = rows[(rows['ts'] >= t_now - g_trail) & (rows['ts'] <= t_now)]
-        if _R.style_trail_fixed_secs(_R.STYLES.get(_style_now)):
-            trace = rows[(rows['ts'] >= t_now - 10.0) & (rows['ts'] <= t_now)]
-
-        peak_mask = (rows['ts'] >= t_now - 1.0) & (rows['ts'] <= t_now)
-        shown_peak = int(rows.loc[peak_mask, 'rpm'].max()) if peak_mask.any() else None
-        brake_val = (float(row['brake']) if 'brake' in row.index
-                     and not np.isnan(row.get('brake', float('nan')))
-                     else float(np.clip(-row['g_long'] / 1.2 * 100, 0, 100)))
-        speed_col = self.g_trail_speed_colour.get()
-        _img = _R.build_frame(
-            float(row['rpm']), float(row['throttle']), float(row['speed']),
-            int(row['gear']), float(row['g_lat']), float(row['g_long']), t_now,
-            trace['g_lat'].tolist(), trace['g_long'].tolist(),
-            laps, bg, cx, cy, r,
-            w=out_w, h=out_h_actual, scale=scale,
-            brake_pct=brake_val, rpm_max=rpm_max, peak_rpm=shown_peak,
-            trace_speed=trace['speed'].tolist() if speed_col else None,
-            speed_colour=speed_col, speed_max=speed_max, P=P,
-            trace_throttle=trace['throttle'].tolist() if 'throttle' in trace.columns else None,
-            trace_brake=trace['brake'].tolist() if 'brake' in trace.columns else None,
-            trace_gear=trace['gear'].tolist() if 'gear' in trace.columns else None,
-            chanA=float(row['chanA']) if 'chanA' in row.index else float('nan'),
-            chanA_label=self.chanA_label.get(),
-            chanB=float(row['chanB']) if 'chanB' in row.index else float('nan'),
-            chanB_label=self.chanB_label.get(),
-            chanA_unit=self.chanA_unit.get(), chanB_unit=self.chanB_unit.get(),
-            backdrop_colour=self._backdrop_rgb(), redline=_redline)
-        # Same crop the render will apply, so the preview is honest about the
-        # output frame. The rect comes from this frame only; the panel is a solid
-        # rectangle, so it does not move with the data.
-        if self.crop_to_content.get() and _R.style_can_crop(P):
-            _rect = _R.content_crop_rect([_img], self._backdrop_rgb()
-                                         or P.get("chroma", (255, 0, 255)))
-            if _rect:
-                _img = _img.crop(_rect)
-        return _img
-
     def _preview_frame(self):
         """Render a single frame at t_start and display it in a popup window."""
         if not DEPS_OK:
@@ -4163,8 +3605,24 @@ class App(tk.Tk):
             self._preview_dual()
             return
 
-        resolution = _R.style_frame_size(_R.STYLES.get(_style_now))
+        if _style_now in ("Style 7", "Style 8"):
+            resolution = (1920, 1080)
+        elif _style_now == "Dash 10 (Arc)":
+            resolution = (2560, 750)     # wide frame: side margins for corner text
+        else:
+            resolution = (1920, 750)
         out_w, out_h = resolution
+        _nat_h = int(_R.H_VID * (out_w / _R.W_VID))
+        if out_h < _nat_h - 2:
+            out_h_actual = out_h
+            scale = out_h_actual / _R.H_VID
+        else:
+            scale = out_w / _R.W_VID
+            out_h_actual = int(_R.H_VID * scale)
+
+        P = self._apply_backdrop_to_P(_R.STYLES.get(_style_now, _R.STYLES["Dash 1 (white gauge)"]))
+
+        import math as _math
         rows = self._working_rows
         # Safety net: ensure selected channel columns are present in working rows
         try:
@@ -4177,15 +3635,72 @@ class App(tk.Tk):
                 rows = self._working_rows
         except Exception:
             pass
+        # Apply inversions
+        if self.invert_glat.get():
+            rows = rows.copy(); rows["g_lat"] = -rows["g_lat"]
+        if self.invert_glong.get():
+            rows = rows.copy(); rows["g_long"] = -rows["g_long"]
+        if self.invert_throttle.get():
+            rows = rows.copy(); rows["throttle"] = 100.0 - rows["throttle"].clip(0,100)
+
         try:
             laps = self._compute_laps()
         except Exception:
             laps = []
         _T = self._tlog("preview: lap detection", _T)
-        img = self._render_dash_pil(t_preview, laps)
-        out_h_actual = img.height
-        out_w = img.width
-        t_now = float(rows.iloc[(rows['ts'] - t_preview).abs().idxmin()]['ts'])
+        self._set_arc_track_path(rows)
+        _T = self._tlog("preview: arc track path", _T)
+
+        peak_rpm = float(rows['rpm'].max())
+        rpm_max  = int(_math.ceil(peak_rpm/1000)*1000)
+        rpm_max  = max(rpm_max, 6000)
+        _peak_spd = float(rows['speed'].max()) if 'speed' in rows.columns else 0.0
+        speed_max = max(60, int(_math.ceil(_peak_spd/10.0)*10))
+
+        _R._GAUGE_BG_CACHE.clear()
+        GS = int(460*scale); GX = int(10*scale)
+        cx = GX+GS//2; cy = out_h_actual//2; r = GS//2-int(12*scale)
+        # Full-frame / box-grid / dash8 styles build their own background — skip gauge bg.
+        _no_gauge = (P.get("dash8_layout") or P.get("style7_layout") or P.get("style8_layout")
+                     or P.get("style11_layout") or P.get("style12_layout")
+                     or P.get("style13_layout") or P.get("style14_layout") or P.get("style20_layout"))
+        bg = None if _no_gauge else _R._build_gauge_bg(cx, cy, r, w=out_w, h=out_h_actual, rpm_max=rpm_max, P=P)
+        _T = self._tlog("preview: gauge background", _T)
+
+        # Find frame at t_preview
+        idx = (rows['ts'] - t_preview).abs().idxmin()
+        row = rows.iloc[idx]
+        t_now = float(row['ts'])
+        trace = rows[(rows['ts'] >= t_now - g_trail) & (rows['ts'] <= t_now)]
+        # Style 14 uses fixed 10s trail regardless of g_trail setting
+        if _style_now in ("Style 14", "Dash 6 (Logger)"):
+            trace = rows[(rows['ts'] >= t_now - 10.0) & (rows['ts'] <= t_now)]
+
+        # 1s peak RPM
+        peak_mask = (rows['ts'] >= t_now-1.0) & (rows['ts'] <= t_now)
+        shown_peak = int(rows.loc[peak_mask,'rpm'].max()) if peak_mask.any() else None
+
+        brake_val = float(row['brake']) if 'brake' in row.index and not np.isnan(row.get('brake',float('nan'))) else float(np.clip(-row['g_long']/1.2*100,0,100))
+
+        speed_col = self.g_trail_speed_colour.get()
+        img = _R.build_frame(
+            float(row['rpm']), float(row['throttle']), float(row['speed']),
+            int(row['gear']), float(row['g_lat']), float(row['g_long']), t_now,
+            trace['g_lat'].tolist(), trace['g_long'].tolist(),
+            laps, bg, cx, cy, r,
+            w=out_w, h=out_h_actual, scale=scale,
+            brake_pct=brake_val, rpm_max=rpm_max, peak_rpm=shown_peak,
+            trace_speed=trace['speed'].tolist() if speed_col else None,
+            speed_colour=speed_col, speed_max=speed_max, P=P,
+            trace_throttle=trace['throttle'].tolist() if 'throttle' in trace.columns else None,
+            trace_brake=trace['brake'].tolist() if 'brake' in trace.columns else None,
+            trace_gear=trace['gear'].tolist() if 'gear' in trace.columns else None,
+            chanA=float(row['chanA']) if 'chanA' in row.index else float('nan'),
+            chanA_label=self.chanA_label.get(),
+            chanB=float(row['chanB']) if 'chanB' in row.index else float('nan'),
+            chanB_label=self.chanB_label.get(),
+            chanA_unit=self.chanA_unit.get(), chanB_unit=self.chanB_unit.get(),
+            backdrop_colour=self._backdrop_rgb())
         _T = self._tlog("preview: dash frame", _T)
         from PIL import ImageTk, Image as _PILImage, ImageDraw as _PILDraw
 
@@ -4513,327 +4028,6 @@ class App(tk.Tk):
         self.status_var.set(f"Time channel: {self.ts_col}  |  Max: {t_max:.1f}s")
 
 
-    # ── Tabs and live previews ───────────────────────────────────────────────
-    def _active_canvas(self):
-        """The scrolling canvas of the tab currently on show (wheel target)."""
-        try:
-            return self._tab_canvases.get(self._nb.select())
-        except Exception:
-            return None
-
-    def _make_preview_pane(self, parent, kind, caption):
-        """A framed image area that shows this tab's overlay at the scrub time."""
-        f = tk.Frame(parent, bg=DARK_CARD, padx=10, pady=8,
-                     highlightbackground=BORDER_COL, highlightthickness=1)
-        f.grid(row=0, column=0, sticky="nsew")
-        f.columnconfigure(0, weight=1)
-        f.rowconfigure(1, weight=1)
-        tk.Label(f, text=caption, font=FONT_HEAD, bg=DARK_CARD,
-                 fg=ACCENT).grid(row=0, column=0, sticky="w")
-        holder = tk.Frame(f, bg=DARK_PANEL)
-        holder.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
-        holder.grid_propagate(False)     # the image must not resize the pane
-        holder.columnconfigure(0, weight=1)
-        holder.rowconfigure(0, weight=1)
-        img = tk.Label(holder, bg=DARK_PANEL, fg=TEXT_SEC, font=FONT_SMALL,
-                       text="Load a log file to see a preview",
-                       anchor="center", justify="center")
-        img.grid(row=0, column=0, sticky="nsew")
-        self._pv_panes[kind] = img
-        self._pv_holders[kind] = holder
-
-        # Scrubber directly beneath the picture, so the time control sits with
-        # the thing it controls. All tabs share self._pv_var.
-        scrub = tk.Frame(f, bg=DARK_CARD)
-        scrub.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        scrub.columnconfigure(1, weight=1)
-        tk.Label(scrub, text="Time:", font=FONT_SMALL, bg=DARK_CARD,
-                 fg=TEXT_SEC).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        sc = ttk.Scale(scrub, from_=0.0, to=1.0, orient="horizontal",
-                       variable=self._pv_var, command=self._on_scrub)
-        sc.grid(row=0, column=1, sticky="ew")
-        tk.Label(scrub, textvariable=self._pv_time_lbl, font=FONT_MONO,
-                 bg=DARK_CARD, fg=ACCENT2, width=9).grid(row=0, column=2,
-                                                         sticky="w", padx=(8, 0))
-        self._pv_scales.append(sc)
-        holder.bind("<Configure>", lambda e, k=kind: self._on_pane_resize(k, e))
-        return f
-
-    def _sync_gplot_controls(self, *_a):
-        """The X-Y graph is an opaque panel that needs no chroma key, so its
-        backdrop choice does nothing - hide it for that form."""
-        if not hasattr(self, "_gp_bd_cb"):
-            return
-        _xy = not self.gtrace_form.get().startswith("Target")
-        for w in (self._gp_bd_lbl, self._gp_bd_cb):
-            try:
-                w.grid_remove() if _xy else w.grid()
-            except Exception:
-                pass
-
-    def _on_pane_resize(self, kind, event=None):
-        """Re-render after the pane is given a new size (window resize).
-
-        Only when the box actually changes, so a run of Configure events during a
-        drag does not queue a render per pixel.
-        """
-        if kind != getattr(self, "_pv_kind", None):
-            return
-        box = self._preview_box()
-        if box == getattr(self, "_pv_last_box", None):
-            return
-        self._pv_last_box = box
-        self._schedule_preview(250)
-
-    def _sync_dash_controls(self, *_a):
-        """Show only the controls the selected dash actually uses.
-
-        Most dashes draw no trailing trace, so the trail length and speed-colour
-        options do nothing for them; and only the panel dashes can be cropped out
-        of their chroma frame.
-        """
-        if not hasattr(self, "_trail_row_w"):
-            return
-        P = _R.STYLES.get(self.style_var.get())
-        has_trail = _R.style_has_trail(P)
-        can_crop = _R.style_can_crop(P)
-        for w, shown in ((self._trail_lbl_w, has_trail),
-                         (self._trail_row_w, has_trail),
-                         (self._crop_chk, can_crop)):
-            if w is None:
-                continue
-            try:
-                w.grid() if shown else w.grid_remove()
-            except Exception:
-                pass
-        # Some dashes fill the frame opaquely (Dash 3, Dash 6b), so there is no
-        # backdrop to choose - and a cropped dash has no chroma either.
-        _bd_used = (not _R.style_is_opaque(P)
-                    and not (can_crop and self.crop_to_content.get()))
-        for w in (getattr(self, "_bd_lbl", None), getattr(self, "_bd_cb", None)):
-            if w is None:
-                continue
-            try:
-                w.grid() if _bd_used else w.grid_remove()
-            except Exception:
-                pass
-
-    def _on_tab_changed(self):
-        """Refresh the preview for the tab that just came into view."""
-        try:
-            kind = self._tab_keys.get(self._nb.select())
-        except Exception:
-            kind = None
-        self._pv_kind = kind
-        if kind:
-            self._schedule_preview(120)
-
-    def _on_scrub(self, _val=None):
-        """Scrubber moved: update the readout and repreview."""
-        t = self._scrub_time()
-        if t is None:
-            self._pv_time_lbl.set("--:--")
-        else:
-            _m, _s = divmod(max(0.0, t), 60)
-            self._pv_time_lbl.set(f"{int(_m)}:{_s:05.2f}")
-        self._schedule_preview(180)
-
-    def _scrub_range(self):
-        """(t_lo, t_hi) the scrubber spans: the selected output range."""
-        lo = hi = None
-        try:
-            lo = float(self.t_start_var.get())
-        except (ValueError, AttributeError, tk.TclError):
-            lo = None
-        try:
-            hi = float(self.t_end_var.get())
-        except (ValueError, AttributeError, tk.TclError):
-            hi = None
-        if self._working_rows is not None and len(self._working_rows):
-            _ts = self._working_rows["ts"]
-            if lo is None:
-                lo = float(_ts.min())
-            if hi is None:
-                hi = float(_ts.max())
-        if lo is None or hi is None or hi <= lo:
-            return None, None
-        return lo, hi
-
-    def _scrub_time(self):
-        """Absolute time the scrubber currently points at, or None."""
-        lo, hi = self._scrub_range()
-        if lo is None:
-            return None
-        try:
-            frac = float(self._pv_var.get())
-        except Exception:
-            frac = 0.0
-        return lo + max(0.0, min(1.0, frac)) * (hi - lo)
-
-    def _schedule_preview(self, delay=300):
-        """Debounced preview refresh - settings often change several at a time."""
-        if getattr(self, "_pv_job", None):
-            try:
-                self.after_cancel(self._pv_job)
-            except Exception:
-                pass
-        self._pv_job = self.after(delay, self._refresh_tab_preview)
-
-    def _preview_box(self):
-        """Pixel box the preview image must fit inside.
-
-        Measured from the NOTEBOOK, never from the label holding the image: the
-        label grows to fit whatever it was last given, so sizing off it fed back
-        on itself and the preview changed size on every refresh. The notebook is
-        sized by the window, so this is stable. Rounded to 20px steps so a stray
-        pixel of resize does not trigger a different render.
-        """
-        hold = (getattr(self, "_pv_holders", None) or {}).get(
-            getattr(self, "_pv_kind", None))
-        hw = hh = 0
-        if hold is not None:
-            try:
-                hw, hh = hold.winfo_width(), hold.winfo_height()
-            except Exception:
-                hw = hh = 0
-        if hw > 80 and hh > 80:
-            # 4px of slack so the image never lands exactly on the edge
-            return (int((hw - 4) // 20 * 20), int((hh - 4) // 20 * 20))
-        # Not laid out yet: estimate from the window.
-        try:
-            nb_w = self._nb.winfo_width() or 0
-            nb_h = self._nb.winfo_height() or 0
-        except Exception:
-            nb_w = nb_h = 0
-        if nb_w < 400:
-            nb_w, nb_h = 1400, 640
-        controls_w = self.LABEL_COL_W + self.HELP_W + 200
-        box_w = max(self.PREVIEW_MIN_W, nb_w - controls_w - 90)
-        box_h = max(220, nb_h - 150)
-        return (int(box_w // 20 * 20), int(box_h // 20 * 20))
-
-    def _pv_show_msg(self, kind, msg):
-        lbl = (getattr(self, "_pv_panes", None) or {}).get(kind)
-        if lbl is not None:
-            lbl.config(image="", text=msg)
-            lbl.image = None
-
-    def _refresh_tab_preview(self):
-        """Render the visible tab's overlay from the live settings."""
-        self._pv_job = None
-        kind = getattr(self, "_pv_kind", None)
-        lbl = (getattr(self, "_pv_panes", None) or {}).get(kind)
-        if kind is None or lbl is None:
-            return
-        if not DEPS_OK:
-            self._pv_show_msg(kind, f"Missing dependency: {MISSING_DEP}")
-            return
-        if self.df is None:
-            self._pv_show_msg(kind, "Load a log file to see a preview")
-            return
-        if self._working_rows is None:
-            try:
-                col_map = {ch: v.get() for ch, v in self.col_vars.items()
-                           if v.get() not in ("(not detected)", "(None)", "")}
-                self._prepare_working_df(col_map)
-            except Exception as e:
-                self._pv_show_msg(kind, f"Could not prepare data: {e}")
-                return
-        t_now = self._scrub_time()
-        if t_now is None:
-            self._pv_show_msg(kind, "Set a valid Start / End range")
-            return
-        box_w, box_h = self._preview_box()
-        self._loading_start("Rendering preview")
-        try:
-            img = self._render_preview_image(kind, t_now, box_w, box_h)
-        except Exception as e:
-            self._pv_show_msg(kind, f"Preview unavailable:\n{e}")
-            return
-        finally:
-            self._loading_stop()
-        if img is None:
-            return
-        from PIL import ImageTk
-        tk_img = ImageTk.PhotoImage(img)
-        lbl.config(image=tk_img, text="")
-        lbl.image = tk_img          # keep a reference or Tk discards it
-
-    def _render_preview_image(self, kind, t_now, box_w, box_h):
-        """PIL image of one overlay at t_now, scaled to fit (box_w, box_h)."""
-        from PIL import Image as _PI
-        rows = self._working_rows
-        try:
-            laps = self._compute_laps()
-        except Exception:
-            laps = []
-        _t_lo, _t_hi = self._scrub_range()
-
-        if kind == "dash":
-            # Render at roughly preview size: the layout scales off the frame
-            # height, so this is the same picture, just cheaper.
-            img = self._render_dash_pil(t_now, laps, max_w=max(480, int(box_w * 1.4)))
-        elif kind == "gplot":
-            if not _GT_OK:
-                raise RuntimeError("G-plot renderer not available")
-            if "g_lat" not in rows.columns or "g_long" not in rows.columns:
-                raise RuntimeError("No G channels mapped")
-            _csel = self.gtrace_colour.get()
-            if _csel == "Black & white":
-                _cmode, _cchan = "bw", None
-            elif _csel.startswith("Channel: "):
-                _cmode = "channel"
-                _cchan = self._colour_label_to_col(_csel[len("Channel: "):])
-            else:
-                _cmode, _cchan = "speed", None
-            try:
-                _trail = float(self.gtrace_trail.get())
-            except (ValueError, AttributeError):
-                _trail = 40.0
-            img = _GT.render_preview_frame(
-                rows, t_now, resolution=(600, 600),
-                chroma=self._bd_rgb(self.gt_backdrop.get()), transparent=False,
-                g_trail_secs=_trail,
-                form="target" if self.gtrace_form.get().startswith("Target") else "classic",
-                colour_mode=_cmode, colour_channel=_cchan, g_max=self._gt_gmax())
-        elif kind == "trackmap":
-            if not _TM_OK:
-                raise RuntimeError("Track map renderer not available")
-            if "lat" not in rows.columns or "lon" not in rows.columns:
-                raise RuntimeError("No GPS lat / lon channels mapped")
-            img = _TM.render_preview_frame(
-                rows, t_now, resolution=(600, 600),
-                chroma=self._bd_rgb(self.tm_backdrop.get()), transparent=False,
-                speed_colour=self.tm_speed_colour.get(),
-                line_colour=(235, 235, 245),
-                segment_secs=self._tm_segment_secs(),
-                t_start=_t_lo, t_end=_t_hi, laps=laps)
-        elif kind == "lapdata":
-            if not _LD_OK:
-                raise RuntimeError("Lap data renderer not available")
-            if not laps:
-                raise RuntimeError("No laps detected yet")
-            _mode = "list" if self.ld_mode.get().startswith("All") else "current"
-            _res = (400, 700) if _mode == "list" else (400, 220)
-            img = _LD.render_preview_frame(
-                rows, t_now, laps, resolution=_res,
-                chroma=self._bd_rgb(self.ld_backdrop.get()), transparent=False,
-                mode=_mode, style=self._ld_style_key())
-        else:
-            return None
-
-        sc = min(box_w / img.width, box_h / img.height, 1.6)
-        if abs(sc - 1.0) > 0.001:
-            img = img.resize((max(1, int(img.width * sc)),
-                              max(1, int(img.height * sc))), _PI.LANCZOS)
-        # Belt and braces: the Tk label clips anything larger than its cell, so a
-        # preview must never come back bigger than the box it was asked for.
-        if img.width > box_w or img.height > box_h:
-            _s2 = min(box_w / img.width, box_h / img.height)
-            img = img.resize((max(1, int(img.width * _s2)),
-                              max(1, int(img.height * _s2))), _PI.LANCZOS)
-        return img.convert("RGB")
-
     def _fix_combo(self, combo):
         """Stop the mouse wheel from silently changing a dropdown's value.
 
@@ -4844,7 +4038,7 @@ class App(tk.Tk):
         normally because that popdown is a separate window.
         """
         def _wheel(e):
-            cv = self._active_canvas()
+            cv = getattr(self, "_scroll_canvas", None)
             if cv is not None:
                 try:
                     if getattr(e, 'num', None) == 4:
@@ -4910,40 +4104,26 @@ class App(tk.Tk):
     def _format_lap_table(laps, best_lt, mode, box_w=96):
         """Lay the lap list out in columns so it uses the panel width instead of
         one long scrolling column."""
-        def _mmss(t, dp):
-            m, s = divmod(max(0.0, float(t)), 60.0)
-            return f"{int(m)}:{s:0{3 + dp}.{dp}f}"
-
-        # Every field is padded to the widest value in the session, so the digits
-        # line up down the page whatever the lap count or the times.
-        # The "at" column stays in seconds: it is what you type into Start / End.
-        cells = [(str(i), _mmss(lt, 3), "*" if lt == best_lt else " ", f"{st:.2f}")
-                 for i, (st, _et, lt) in enumerate(laps, 1)]
-        w_no = max([len(c[0]) for c in cells] + [3])
-        w_lt = max([len(c[1]) for c in cells] + [4])
-        w_at = max([len(c[3]) for c in cells] + [6])
-        blk_w = w_no + 2 + w_lt + 1 + 2 + w_at
-        sep = "   |   "
-        entries = [f"{c[0]:>{w_no}}  {c[1]:>{w_lt}}{c[2]}  {c[3]:>{w_at}}"
-                   for c in cells]
-        # 3 spaces after "Time" to clear the best-lap star in the rows below.
-        header = f"{'Lap':>{w_no}}  {'Time':>{w_lt}}   {'At (s)':>{w_at}}"
-
-        # One column. Side-by-side blocks only line up in a true monospace font,
-        # and it is not worth betting the readability of the lap list on which
-        # fonts a machine happens to have installed.
-        n_cols = 1
-        n_rows = len(entries)
-        lines = [f"  {len(laps)} lap(s) [{mode}]   best: {_mmss(best_lt, 3)}"
-                 f"   (* = best)", ""]
-        lines.append("  " + sep.join([header] * n_cols))
-        lines.append("  " + sep.join(["-" * blk_w] * n_cols))
+        entries = []
+        for i, (st, et, lt) in enumerate(laps, 1):
+            m2, s2 = divmod(lt, 60)
+            star = "*" if lt == best_lt else " "
+            entries.append(f"Lap {i:2d} {int(m2)}m{s2:06.3f}s{star} @{st:8.2f}s")
+        col_w = max(len(e) for e in entries) + 3
+        n_cols = max(1, min(4, box_w // col_w))
+        if len(entries) <= 6:
+            n_cols = 1
+        n_rows = -(-len(entries) // n_cols)          # ceil
+        head = (f"  {len(laps)} lap(s) [{mode}]   best: "
+                f"{int(best_lt//60)}m {best_lt%60:.2f}s   (* = best)")
+        lines = [head, ""]
         for r in range(n_rows):
             row = []
             for c in range(n_cols):
                 k = c * n_rows + r                   # fill down each column
-                row.append(entries[k] if k < len(entries) else " " * blk_w)
-            lines.append("  " + sep.join(row).rstrip())
+                if k < len(entries):
+                    row.append(entries[k].ljust(col_w))
+            lines.append("  " + "".join(row).rstrip())
         return "\n".join(lines)
 
     def _t0(self):
@@ -5046,22 +4226,17 @@ class App(tk.Tk):
 
     def _ld_style_key(self):
         """Lap-data 'Graphic style' label -> lapdata_render style key."""
-        v = (self.ld_style.get() if hasattr(self, "ld_style") else "") or ""
-        # Matched on the dash the graphic is lifted from, so the wording of the
-        # label can change without breaking this. Split on the separator and
-        # compare the whole token: a prefix test made "Dash 10" match "Dash 1".
-        _tag = v.split("·")[0].strip()
-        _BY_DASH = {"Dash 1": "cells_light", "Dash 2": "cells_dark",
-                    "Dash 5": "panels", "Dash 6": "logger", "Dash 7": "hud",
-                    "Dash 8b": "para", "Dash 10": "plain"}
-        if _tag in _BY_DASH:
-            return _BY_DASH[_tag]
-        # legacy labels
-        for _tag, _key in (("HUD", "hud"), ("Logger", "logger"), ("Plain", "plain"),
-                           ("Cells dark", "cells_dark"), ("Cells light", "cells_light"),
-                           ("Slanted", "para")):
-            if v.startswith(_tag):
-                return _key
+        v = self.ld_style.get() if hasattr(self, "ld_style") else ""
+        if v.startswith("HUD"):
+            return "hud"
+        if v.startswith("Logger"):
+            return "logger"
+        if v.startswith("Plain"):
+            return "plain"
+        if v.startswith("Cells dark"):
+            return "cells_dark"
+        if v.startswith("Cells light"):
+            return "cells_light"
         return "panels"
 
     def _tm_segment_secs(self):
@@ -5256,8 +4431,18 @@ class App(tk.Tk):
                     self._working_rows = self._working_rows.copy()
                     self._working_rows[ch2] = _R.apply_lowpass(self._working_rows[ch2])
 
-        # (Inversions are applied in _prepare_working_df, so preview and render
-        #  always agree.)
+        # Apply G-force and throttle inversion if selected
+        if self._working_rows is not None:
+            if self.invert_glat.get():
+                self._working_rows = self._working_rows.copy()
+                self._working_rows["g_lat"] = -self._working_rows["g_lat"]
+            if self.invert_glong.get():
+                if "g_lat" not in self._working_rows.columns or not self.invert_glat.get():
+                    self._working_rows = self._working_rows.copy()
+                self._working_rows["g_long"] = -self._working_rows["g_long"]
+            if self.invert_throttle.get() and "throttle" in self._working_rows.columns:
+                self._working_rows = self._working_rows.copy()
+                self._working_rows["throttle"] = 100.0 - self._working_rows["throttle"].clip(0,100)
 
         # Resample working rows to selected fps
         import numpy as _np
@@ -5369,8 +4554,12 @@ class App(tk.Tk):
         _style2_res = self.style2_var.get() if hasattr(self,"style2_var") else "None"
         if _style2_res and _style2_res != "None":
             resolution = (1920, 1080)
+        elif style in ("Style 7", "Style 8"):
+            resolution = (1920, 1080)
+        elif style == "Dash 10 (Arc)":
+            resolution = (2560, 750)     # wide frame: side margins for corner text
         else:
-            resolution = _R.style_frame_size(_R.STYLES.get(style))
+            resolution = (1920, 750)
         try:
             g_trail = float(self.g_trail_secs.get())
         except ValueError:
@@ -5487,7 +4676,6 @@ class App(tk.Tk):
                 "chanA_unit": self.chanA_unit.get(),
                 "chanB_unit": self.chanB_unit.get(),
                 "backdrop_colour": self._backdrop_rgb(),
-                "crop_to_content": self.crop_to_content.get(),
             },
             daemon=True)
         t.start()
