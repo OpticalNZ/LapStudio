@@ -84,3 +84,6 @@ desktop.ini
 *.xrz
 *.vbo
 motec_preview_check.png
+
+# PyInstaller regenerates this on every build, so it only ever churns.
+gopro-dashboard-overlay-main.zip
