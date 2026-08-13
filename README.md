@@ -114,6 +114,11 @@ percentile of rpm, not the peak, so a single spike cannot push the bands out of
 reach. Bands are proportional to it, so they behave the same on a 6000 rpm diesel
 and a 15000 rpm bike engine.
 
+**Smoothing** is zero-phase: each channel is filtered forwards, then backwards
+over the result, so the delay the first pass adds the second takes off again.
+The setting is a time constant in seconds rather than a number of samples, so the
+tick means the same thing on a 10 Hz VBO and a 50 Hz AiM log.
+
 **Lap timing** counts up live through a lap, then shows the completed time.
 
 **G sensor levelling** is optional and measured, not assumed. A logger on an

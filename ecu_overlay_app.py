@@ -2188,6 +2188,7 @@ class App(tk.Tk):
                 else:                  ivar = self.invert_throttle
                 tk.Checkbutton(
                     self.col_frame, variable=ivar,
+                    command=self._schedule_rebuild,
                     bg=DARK_CARD, fg=ACCENT2, activebackground=DARK_CARD,
                     activeforeground=ACCENT2, selectcolor=DARK_PANEL,
                     relief="flat", bd=0, cursor="hand2").grid(
@@ -2202,6 +2203,7 @@ class App(tk.Tk):
                 self.smooth_vars[ch].set(saved_val)
             tk.Checkbutton(
                 self.col_frame, variable=self.smooth_vars[ch],
+                command=self._schedule_rebuild,
                 bg=DARK_CARD, fg=ACCENT2, activebackground=DARK_CARD,
                 activeforeground=ACCENT2, selectcolor=DARK_PANEL,
                 relief="flat", bd=0, cursor="hand2").grid(
@@ -3356,6 +3358,7 @@ class App(tk.Tk):
                 else:                  ivar = self.invert_throttle
                 tk.Checkbutton(
                     self.col_frame, variable=ivar,
+                    command=self._schedule_rebuild,
                     bg=DARK_CARD, fg=ACCENT2, activebackground=DARK_CARD,
                     activeforeground=ACCENT2, selectcolor=DARK_PANEL,
                     relief="flat", bd=0, cursor="hand2").grid(
@@ -3370,6 +3373,7 @@ class App(tk.Tk):
                 self.smooth_vars[ch].set(saved_val)
             tk.Checkbutton(
                 self.col_frame, variable=self.smooth_vars[ch],
+                command=self._schedule_rebuild,
                 bg=DARK_CARD, fg=ACCENT2, activebackground=DARK_CARD,
                 activeforeground=ACCENT2, selectcolor=DARK_PANEL,
                 relief="flat", bd=0, cursor="hand2").grid(
@@ -4131,6 +4135,17 @@ class App(tk.Tk):
                 rows[_icol] = -rows[_icol]
         if self.invert_throttle.get() and "throttle" in rows.columns:
             rows["throttle"] = 100.0 - rows["throttle"].clip(0, 100)
+
+        # Smoothing belongs here for the same reason the inversions do: it used
+        # to be applied only on the way to the encoder, so ticking Smooth changed
+        # the exported video but not the preview you ticked it from.
+        _hz = getattr(self, "_data_fps", None)
+        for _ch, _svar in getattr(self, "smooth_vars", {}).items():
+            if _svar.get() and _ch in rows.columns:
+                try:
+                    rows[_ch] = _R.apply_lowpass(rows[_ch], hz=_hz)
+                except Exception:
+                    pass
 
         self._working_rows = rows
         # Retry until it produces something it stands behind. The first pass
@@ -5620,12 +5635,8 @@ class App(tk.Tk):
         col_map = {ch: var.get() for ch, var in self.col_vars.items()
                    if var.get() not in ("(not detected)", "(None)", "")}
         self._prepare_working_df(col_map)
-        # Apply per-channel smoothing if selected
-        if self._working_rows is not None and hasattr(self, 'smooth_vars'):
-            for ch2, svar in self.smooth_vars.items():
-                if svar.get() and ch2 in self._working_rows.columns:
-                    self._working_rows = self._working_rows.copy()
-                    self._working_rows[ch2] = _R.apply_lowpass(self._working_rows[ch2])
+        # (Smoothing is applied in _prepare_working_df, alongside the
+        #  inversions, so the preview and the export cannot disagree.)
 
         # (Inversions are applied in _prepare_working_df, so preview and render
         #  always agree.)
