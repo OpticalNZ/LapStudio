@@ -178,6 +178,17 @@ tests/                 headless UI smoke test and its tkinter stubs
 
 ---
 
+## Releasing
+
+`RELEASING.md` is the step-by-step: run the tests, set the version, push the
+source, build the zip with `make_release.bat`, test it as a user would, then
+attach it to a GitHub Release.
+
+Downloads live at
+<https://github.com/OpticalNZ/LapStudio/releases/latest>.
+
+---
+
 ## Licence
 
 LapStudio is MIT licensed — see `LICENSE`.
