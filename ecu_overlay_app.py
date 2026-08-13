@@ -570,10 +570,14 @@ _EXACT_NAMES = {
 
 
 # Track map modes.
-#   All          every lap in the export range, as logged
-#   Static track one clean circuit taken from the fastest lap, car dot on top
-#   Stage        a length of track that scrolls past a car pinned to the centre
-_TM_AMOUNTS = ("All", "Static track", "Stage")
+#   All Laps  every lap in the export range, as logged
+#   One Lap   one clean circuit taken from the fastest lap, car dot on top
+#   Stage     a length of track that scrolls past a car pinned to the centre
+_TM_AMOUNTS = ("All Laps", "One Lap", "Stage")
+
+# What earlier versions called these, so a saved preference still means what the
+# user chose. "30s window" was a mode and a length in one string.
+_TM_AMOUNT_ALIASES = {"All": "All Laps", "Static track": "One Lap"}
 
 _TM_STAGE_LENGTHS = tuple([f"{n}s" for n in range(10, 61, 10)]
                           + [f"{n}s" for n in (75, 90, 105, 120, 135, 150)])
@@ -1070,7 +1074,7 @@ class App(tk.Tk):
         self.tm_backdrop  = tk.StringVar(value="Chroma magenta")   # track-map widget
         # Track-map widget options (own settings, independent of the dash)
         self.tm_speed_colour = tk.BooleanVar(value=True)
-        self.tm_amount   = tk.StringVar(value="All")   # All / Static track / Stage
+        self.tm_amount   = tk.StringVar(value="All Laps")  # see _TM_AMOUNTS
         self.tm_stage_secs = tk.StringVar(value="30s")  # only used by Stage
         # Optional separate lap-data overlay video
         self.gen_lapdata = tk.BooleanVar(value=False)
@@ -5411,8 +5415,9 @@ class App(tk.Tk):
         "30s window". Those are still understood so an upgrade does not silently
         reset someone's setting.
         """
-        v = self.tm_amount.get() if hasattr(self, "tm_amount") else "All"
-        if v in ("All", "Static track"):
+        v = self.tm_amount.get() if hasattr(self, "tm_amount") else "All Laps"
+        v = _TM_AMOUNT_ALIASES.get(v, v)
+        if v in ("All Laps", "One Lap"):
             return None
         if v == "Stage":
             v = self.tm_stage_secs.get() if hasattr(self, "tm_stage_secs") else "30s"
@@ -5424,14 +5429,14 @@ class App(tk.Tk):
     def _tm_track_window(self):
         """(start, end) of the lap whose path is drawn, or None for every lap.
 
-        Static track uses the fastest lap, because it is the one most likely to
+        One Lap uses the fastest lap, because it is the one most likely to
         be a clean circuit - an out lap can cut the pit lane and a slow lap can
         wander. Falls back to every lap when no lap is timed, rather than
         drawing nothing.
         """
         if getattr(self, "tm_amount", None) is None:
             return None
-        if self.tm_amount.get() != "Static track":
+        if _TM_AMOUNT_ALIASES.get(self.tm_amount.get(), self.tm_amount.get()) != "One Lap":
             return None
         laps = getattr(self, "_aim_laps", None) or []
         timed = [(lt, st, et) for (st, et, lt) in laps if lt and 5.0 < lt < 3600.0]
@@ -5444,7 +5449,7 @@ class App(tk.Tk):
         """Stage length only means anything in Stage mode."""
         if not hasattr(self, "_tm_stage_cb"):
             return
-        show = self.tm_amount.get() == "Stage"
+        show = _TM_AMOUNT_ALIASES.get(self.tm_amount.get(), self.tm_amount.get()) == "Stage"
         for w in (self._tm_stage_lbl, self._tm_stage_cb):
             try:
                 w.grid() if show else w.grid_remove()
