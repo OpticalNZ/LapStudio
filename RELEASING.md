@@ -43,13 +43,22 @@ information is treated more harshly by Defender than one with it.
 
 ## 3. Push the source
 
+**Easiest: double-click `push.bat`.** It shows what is about to go up, warns you
+if anything is edited but not committed, waits for you to agree, then pushes.
+
+To do it by hand instead, you need a Command Prompt open in the project folder.
+The quick way: open the LapStudio folder in File Explorer, click the address bar,
+type `cmd` and press Enter. Then:
+
 ```
 git status                  # should say nothing to commit, working tree clean
 git push origin main
 ```
 
-If `git push` asks for a password, GitHub no longer accepts one. Use a personal
-access token as the password, or install GitHub Desktop and push from there.
+If it asks for a username and password, GitHub no longer accepts account
+passwords. Use a Personal Access Token as the password - github.com, Settings,
+Developer settings, Personal access tokens, with `repo` access - or install
+GitHub Desktop and push from there.
 
 ## 4. Build the zip
 
