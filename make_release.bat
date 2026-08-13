@@ -204,6 +204,7 @@ python -m PyInstaller ^
   --hidden-import xrk_reader ^
   --hidden-import vbo_reader ^
   --hidden-import motec_reader ^
+  --hidden-import gsensor ^
   --hidden-import renderer_pil ^
   --hidden-import renderer_multistyle ^
   --hidden-import lapdata_render ^

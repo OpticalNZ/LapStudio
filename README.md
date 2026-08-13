@@ -116,6 +116,13 @@ and a 15000 rpm bike engine.
 
 **Lap timing** counts up live through a lap, then shows the completed time.
 
+**G sensor levelling** is optional and measured, not assumed. A logger on an
+angled mount reads gravity as acceleration, biasing the G plot and shortening
+every braking figure. Two methods that need neither a stationary car nor level
+ground estimate the tilt - a distance-weighted average over closed laps, and a
+regression against acceleration derived from speed - and they must agree before
+anything is corrected. `gsensor.py`.
+
 **MoTeC logs bring their own lap times.** The `.ld` format holds each completed
 lap time in a channel, so laps come from the logger's beacon rather than being
 estimated from GPS. Channels are logged at their own rates, from 1 Hz counters to
@@ -133,6 +140,7 @@ counters, firmware versions - are hidden from the mapping lists by default.
 python jitter_test.py       # fixed digit-pitch text engine; no readout may move
 python tests/ui_smoke.py    # builds the whole UI headlessly and exercises it
 python tests/motec_check.py # loads a MoTeC .ld end to end, if one is present
+python tests/gsensor_check.py # tilt estimator, on sessions with a planted tilt
 ```
 
 `tests/ui_smoke.py` uses a stub tkinter (`tests/stubs`) so the interface can be
@@ -154,6 +162,7 @@ lapdata_render.py      lap data overlay
 textgrid.py            fixed digit-pitch text, shared by every renderer
 vbo_reader.py          VBO parser
 motec_reader.py        MoTeC i2 .ld parser, written from the format up
+gsensor.py             measures G sensor mounting tilt and corrects it
 xrk_reader.py          AiM reader front end
 xrk_helper.py          subprocess that talks to the AiM DLL
 diagnose_aim.py        prints what the app sees in a log; useful for mapping bugs

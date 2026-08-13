@@ -1030,6 +1030,9 @@ class App(tk.Tk):
         self.t_end_var   = tk.StringVar(value="0")
         self.max_t_label = tk.StringVar(value="Max: —")
         self.fps_var      = tk.StringVar(value="25")
+        self.level_gsensor = tk.BooleanVar(value=False)
+        self._gfit         = None       # gsensor.GSensorFit for the loaded log
+        self.gsensor_note  = tk.StringVar(value="")
         self.invert_glat   = tk.BooleanVar(value=False)
         self.invert_glong  = tk.BooleanVar(value=False)
         self.invert_throttle = tk.BooleanVar(value=False)
@@ -1413,6 +1416,26 @@ class App(tk.Tk):
         self.col_frame = self._card(tab_data, 3)
         self._register_help(self.col_frame, "channels")
         self._build_col_mapping([])   # empty until file loaded
+
+        # ── G sensor levelling ────────────────────────────────────────────────
+        _gcard = self._card(tab_data, 4)
+        tk.Checkbutton(_gcard, text="Level the G sensor",
+                       variable=self.level_gsensor,
+                       command=self._on_level_gsensor,
+                       bg=DARK_CARD, fg=ACCENT, activebackground=DARK_CARD,
+                       activeforeground=ACCENT, selectcolor=DARK_PANEL,
+                       font=FONT_BODY, relief="flat", cursor="hand2").grid(
+            row=0, column=0, sticky="w")
+        tk.Label(_gcard, textvariable=self.gsensor_note, font=FONT_SMALL,
+                 bg=DARK_CARD, fg=TEXT_SEC, justify="left", anchor="w").grid(
+            row=1, column=0, sticky="w", pady=(2, 0))
+        tk.Label(_gcard, font=FONT_SMALL, bg=DARK_CARD, fg=TEXT_SEC,
+                 justify="left", anchor="w", wraplength=680,
+                 text=("A logger on an angled mount reads gravity as acceleration, "
+                       "which biases the G plot and shortens every braking figure. "
+                       "Measured from the data, not assumed - and left alone if the "
+                       "checks disagree.")).grid(row=2, column=0, sticky="w", pady=(2, 0))
+
         # collect all lockable inputs after build
         self.after(100, self._collect_inputs)
 
@@ -1986,6 +2009,7 @@ class App(tk.Tk):
                     "backdrop_var",
                     "gtrace_form", "gtrace_trail", "gtrace_colour", "gtrace_gmax",
                     "gt_backdrop", "gen_gtrace",
+                    "level_gsensor",
                     "tm_speed_colour", "tm_amount", "tm_stage_secs",
                     "tm_backdrop", "gen_trackmap",
                     "ld_mode", "ld_style", "ld_backdrop", "gen_lapdata",
@@ -2521,6 +2545,42 @@ class App(tk.Tk):
             self._loading_stop("load failed")
             messagebox.showerror("Load Error", str(e))
             self.status_var.set("Error loading file.")
+
+    def _fit_gsensor(self, rows=None):
+        """Measure how the G sensor is mounted, for the Data tab tick.
+
+        Only ever reports; it corrects nothing on its own. Failure here must not
+        stop a log loading, so anything unexpected leaves the fit unset.
+        """
+        self._gfit = None
+        try:
+            import gsensor as _gs
+            if rows is None:
+                rows = getattr(self, "_working_rows", None)
+            if rows is None or "g_long" not in rows.columns:
+                self.gsensor_note.set("")
+                return
+            probe = rows.copy()
+            for _vn in ("G Force Vert", "Vertical G"):
+                if _vn in self.df.columns and "g_vert" not in probe.columns:
+                    probe["g_vert"] = np.interp(
+                        probe["ts"].values, self.df[self.ts_col].values,
+                        pd.to_numeric(self.df[_vn], errors="coerce")
+                          .interpolate().ffill().bfill().fillna(0).values)
+                    break
+            self._gfit = _gs.estimate(probe, getattr(self, "_aim_laps", None))
+            self.gsensor_note.set(self._gfit.describe())
+        except Exception as e:
+            self.gsensor_note.set(f"G sensor: could not be checked ({type(e).__name__})")
+
+    def _on_level_gsensor(self, *_a):
+        """Re-derive the working data when the tick changes."""
+        if self.df is None:
+            return
+        col_map = {ch: v.get() for ch, v in self.col_vars.items()
+                   if v.get() not in ("(not detected)", "(None)", "")}
+        self._prepare_working_df(col_map)
+        self._schedule_preview(60)
 
     def _prepare_working_df(self, col_map):
         """Build a clean normalised dataframe with standard column names."""
@@ -3714,6 +3774,8 @@ class App(tk.Tk):
             f"- {n_laps} laps, best {meta.get('best_lap','')}{_warn}")
 
     def _load_file(self, path):
+        self._gfit = None                  # a different car, a different mount
+        self.gsensor_note.set("")
         self._set_output_name_from_log(path)
         self.status_var.set("Loading file…")
         self._loading_start("Loading file")
@@ -3787,6 +3849,42 @@ class App(tk.Tk):
             self._loading_stop("load failed")
             messagebox.showerror("Load Error", str(e))
             self.status_var.set("Error loading file.")
+
+    def _fit_gsensor(self, rows=None):
+        """Measure how the G sensor is mounted, for the Data tab tick.
+
+        Only ever reports; it corrects nothing on its own. Failure here must not
+        stop a log loading, so anything unexpected leaves the fit unset.
+        """
+        self._gfit = None
+        try:
+            import gsensor as _gs
+            if rows is None:
+                rows = getattr(self, "_working_rows", None)
+            if rows is None or "g_long" not in rows.columns:
+                self.gsensor_note.set("")
+                return
+            probe = rows.copy()
+            for _vn in ("G Force Vert", "Vertical G"):
+                if _vn in self.df.columns and "g_vert" not in probe.columns:
+                    probe["g_vert"] = np.interp(
+                        probe["ts"].values, self.df[self.ts_col].values,
+                        pd.to_numeric(self.df[_vn], errors="coerce")
+                          .interpolate().ffill().bfill().fillna(0).values)
+                    break
+            self._gfit = _gs.estimate(probe, getattr(self, "_aim_laps", None))
+            self.gsensor_note.set(self._gfit.describe())
+        except Exception as e:
+            self.gsensor_note.set(f"G sensor: could not be checked ({type(e).__name__})")
+
+    def _on_level_gsensor(self, *_a):
+        """Re-derive the working data when the tick changes."""
+        if self.df is None:
+            return
+        col_map = {ch: v.get() for ch, v in self.col_vars.items()
+                   if v.get() not in ("(not detected)", "(None)", "")}
+        self._prepare_working_df(col_map)
+        self._schedule_preview(60)
 
     def _prepare_working_df(self, col_map):
         """Build a clean normalised dataframe with standard column names."""
@@ -3944,6 +4042,29 @@ class App(tk.Tk):
             else:
                 rows[_ck] = np.nan   # sentinel: not selected → not displayed
 
+        # Keep a handle on the rows as logged. The fit has to be measured from
+        # these, or ticking the box would have it re-measure its own output and
+        # find a level sensor every time.
+        _rows_as_logged = rows.copy()
+
+        # Sensor levelling comes before the inversions. The tilt is a fact about
+        # how the box is bolted in, so it has to be taken off the reading as
+        # logged - flip the sign first and the correction lands the wrong way.
+        if self.level_gsensor.get() and self._gfit is not None:
+            try:
+                import gsensor as _gs
+                if "g_vert" not in rows.columns:
+                    for _vn in ("G Force Vert", "Vertical G", "g_vert"):
+                        if _vn in df.columns:
+                            rows["g_vert"] = np.interp(
+                                tt, df[self.ts_col].values,
+                                pd.to_numeric(df[_vn], errors="coerce")
+                                  .interpolate().ffill().bfill().fillna(0).values)
+                            break
+                rows = _gs.level(rows, self._gfit)
+            except Exception:
+                pass          # never let a correction stop the log loading
+
         # Channel inversions belong here, not at each consumer: the dash preview
         # used to invert on its own while the widget previews did not, so a
         # toggle appeared to do nothing on the G-plot tab.
@@ -3955,6 +4076,11 @@ class App(tk.Tk):
             rows["throttle"] = 100.0 - rows["throttle"].clip(0, 100)
 
         self._working_rows = rows
+        # Retry until it produces something it stands behind. The first pass
+        # through here can run before the channels are mapped, and a fit made
+        # from empty columns must not be the one that sticks.
+        if self._gfit is None or not self._gfit.confident:
+            self._fit_gsensor(_rows_as_logged)
         # Fresh working data: refresh the scrub readout and the visible preview.
         try:
             self._on_scrub()
