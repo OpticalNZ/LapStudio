@@ -121,7 +121,9 @@ angled mount reads gravity as acceleration, biasing the G plot and shortening
 every braking figure. Two methods that need neither a stationary car nor level
 ground estimate the tilt - a distance-weighted average over closed laps, and a
 regression against acceleration derived from speed - and they must agree before
-anything is corrected. `gsensor.py`.
+anything is corrected. The tick sits beside Invert and Smooth in the channel
+mapping, one per G axis, and stays greyed out for an axis that is already level
+or has not been measured. `gsensor.py`.
 
 **MoTeC logs bring their own lap times.** The `.ld` format holds each completed
 lap time in a channel, so laps come from the logger's beacon rather than being

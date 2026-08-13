@@ -84,19 +84,43 @@ class GSensorFit:
         self.has_vertical = has_vertical
 
     @property
-    def worth_correcting(self):
+    def long_worth_correcting(self):
+        """Longitudinal, measured by two methods that have to agree."""
         return self.confident and abs(self.pitch_deg) >= NEGLIGIBLE_TILT
+
+    @property
+    def lat_worth_correcting(self):
+        """Lateral, held to a higher bar. The only estimates available for it are
+        stationary samples and straight-line averaging, and the latter carries a
+        camber bias of the same order as a small roll angle - so a small reading
+        here is not evidence of a tilt, and a good channel is better left alone.
+        """
+        return self.confident and abs(self.roll_deg) >= MIN_ROLL_TO_TRUST
+
+    @property
+    def worth_correcting(self):
+        return self.long_worth_correcting or self.lat_worth_correcting
+
+    def axis_note(self, axis):
+        """One line about a single axis, for the tick beside it."""
+        if not self.confident:
+            return self.note
+        if axis == "long":
+            return (f"pitched {self.pitch_deg:+.1f} deg ({self.long_offset:+.3f} g)"
+                    if self.long_worth_correcting else
+                    f"level to within {abs(self.pitch_deg):.1f} deg")
+        return (f"rolled {self.roll_deg:+.1f} deg ({self.lat_offset:+.3f} g)"
+                if self.lat_worth_correcting else
+                f"level to within {abs(self.roll_deg):.1f} deg")
 
     def describe(self):
         if not self.methods:
             return "G sensor: not enough data to check"
         if not self.confident:
             return f"G sensor: {self.note}"
-        if not self.worth_correcting:
-            return f"G sensor: level to within {abs(self.pitch_deg):.1f} deg, nothing to correct"
-        roll = f", roll {self.roll_deg:+.1f} deg" if abs(self.roll_deg) >= MIN_ROLL_TO_TRUST else ""
-        return (f"G sensor: pitched {self.pitch_deg:+.1f} deg{roll} "
-                f"({self.long_offset:+.3f} g), from {self.n_laps} laps")
+        return (f"G sensor: longitudinal {self.axis_note('long')}"
+                f"  ·  lateral {self.axis_note('lat')}"
+                f"  ·  from {self.n_laps} laps")
 
 
 def _finite(*arrays):
@@ -294,7 +318,7 @@ def estimate(rows, laps=None):
         note=f"agreed to {spread:.3f} g")
 
 
-def level(rows, fit, use_vertical=None):
+def level(rows, fit, do_long=True, do_lat=True, use_vertical=None):
     """Return a copy of `rows` with the G channels levelled.
 
     ROTATE, whenever a vertical channel exists. A true rotation of the vector,
@@ -320,7 +344,9 @@ def level(rows, fit, use_vertical=None):
 
     Pass use_vertical=False to force the single-axis method.
     """
-    if not fit or not fit.worth_correcting:
+    do_long = do_long and fit is not None and fit.long_worth_correcting
+    do_lat = do_lat and fit is not None and fit.lat_worth_correcting
+    if not fit or not (do_long or do_lat):
         return rows
     out = rows.copy()
     if use_vertical is None:
@@ -335,15 +361,18 @@ def level(rows, fit, use_vertical=None):
                 vert = np.asarray(out[n], dtype=float)
                 break
         if vert is not None:
-            p = math.radians(fit.pitch_deg)
-            r = math.radians(fit.roll_deg)
-            cp, sp, cr, sr = math.cos(p), math.sin(p), math.cos(r), math.sin(r)
-            out["g_long"] = lon * cp + vert * sp
-            out["g_lat"] = lat * cr - vert * sr
+            if do_long:
+                p = math.radians(fit.pitch_deg)
+                out["g_long"] = lon * math.cos(p) + vert * math.sin(p)
+            if do_lat:
+                r = math.radians(fit.roll_deg)
+                out["g_lat"] = lat * math.cos(r) - vert * math.sin(r)
             return out
 
-    cp = max(math.cos(math.radians(fit.pitch_deg)), 0.2)
-    cr = max(math.cos(math.radians(fit.roll_deg)), 0.2)
-    out["g_long"] = (lon - fit.long_offset) / cp
-    out["g_lat"] = (lat - fit.lat_offset) / cr
+    if do_long:
+        cp = max(math.cos(math.radians(fit.pitch_deg)), 0.2)
+        out["g_long"] = (lon - fit.long_offset) / cp
+    if do_lat:
+        cr = max(math.cos(math.radians(fit.roll_deg)), 0.2)
+        out["g_lat"] = (lat - fit.lat_offset) / cr
     return out

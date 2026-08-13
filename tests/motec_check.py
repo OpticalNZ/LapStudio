@@ -127,6 +127,47 @@ def main():
     for want in ("speed", "rpm", "throttle", "brake", "gear", "lat", "lon"):
         chk(f"mapped channel {want}", want in rows.columns)
 
+    # --- the per-axis Level ticks -------------------------------------------
+    print("\n--- G sensor levelling ---")
+    fit = getattr(app, "_gfit", None)
+    boxes = getattr(app, "_level_boxes", {})
+    chk("a tick exists for each G axis", set(boxes) == {"g_lat", "g_long"}, str(set(boxes)))
+    if fit is not None and boxes:
+        print(f"    {app.gsensor_note.get()}")
+        for ch, var in (("g_lat", app.level_glat), ("g_long", app.level_glong)):
+            want = (fit.lat_worth_correcting if ch == "g_lat"
+                    else fit.long_worth_correcting)
+            state = boxes[ch].cget("state")
+            chk(f"{ch}: tick {'offered' if want else 'greyed out'}",
+                (state == "normal") == bool(want), state)
+            if not want:
+                chk(f"{ch}: cannot sit ticked with nothing measured", var.get() is False)
+
+        base = app._working_rows[["g_lat", "g_long"]].to_numpy().copy()
+        if fit.long_worth_correcting:
+            app.level_glong.set(True)
+            app._on_level_gsensor()
+            now = app._working_rows[["g_lat", "g_long"]].to_numpy()
+            n = min(len(now), len(base))
+            chk("levelling one axis changes it",
+                not np.allclose(now[:n, 1], base[:n, 1]))
+            chk("levelling one axis leaves the other alone",
+                np.allclose(now[:n, 0], base[:n, 0]))
+            chk("the resting bias is gone", abs(now[:n, 1].mean()) < 0.05,
+                f"{base[:n,1].mean():+.3f} -> {now[:n,1].mean():+.3f}")
+            # Ticking an axis with nothing measured must be harmless.
+            app.level_glat.set(True)
+            app._on_level_gsensor()
+            now2 = app._working_rows[["g_lat", "g_long"]].to_numpy()
+            chk("ticking an unmeasured axis is a safe no-op",
+                np.allclose(now2[:n, 0], base[:n, 0]))
+            app.level_glong.set(False)
+            app.level_glat.set(False)
+            app._on_level_gsensor()
+            n = min(len(base), len(app._working_rows))
+            chk("unticking restores the log as recorded",
+                np.allclose(app._working_rows[["g_lat", "g_long"]].to_numpy()[:n], base[:n]))
+
     # --- render every overlay for real --------------------------------------
     print("\n--- overlays render ---")
     for child, kw in app._nb._tabs:

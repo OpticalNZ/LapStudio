@@ -1030,8 +1030,10 @@ class App(tk.Tk):
         self.t_end_var   = tk.StringVar(value="0")
         self.max_t_label = tk.StringVar(value="Max: —")
         self.fps_var      = tk.StringVar(value="25")
-        self.level_gsensor = tk.BooleanVar(value=False)
+        self.level_glat    = tk.BooleanVar(value=False)
+        self.level_glong   = tk.BooleanVar(value=False)
         self._gfit         = None       # gsensor.GSensorFit for the loaded log
+        self._level_boxes  = {}         # the two Level ticks, by channel
         self.gsensor_note  = tk.StringVar(value="")
         self.invert_glat   = tk.BooleanVar(value=False)
         self.invert_glong  = tk.BooleanVar(value=False)
@@ -1419,22 +1421,20 @@ class App(tk.Tk):
 
         # ── G sensor levelling ────────────────────────────────────────────────
         _gcard = self._card(tab_data, 4)
-        tk.Checkbutton(_gcard, text="Level the G sensor",
-                       variable=self.level_gsensor,
-                       command=self._on_level_gsensor,
-                       bg=DARK_CARD, fg=ACCENT, activebackground=DARK_CARD,
-                       activeforeground=ACCENT, selectcolor=DARK_PANEL,
-                       font=FONT_BODY, relief="flat", cursor="hand2").grid(
-            row=0, column=0, sticky="w")
+        tk.Label(_gcard, text="G SENSOR MOUNTING", font=FONT_HEAD,
+                 bg=DARK_CARD, fg=ACCENT).grid(row=0, column=0, sticky="w")
         tk.Label(_gcard, textvariable=self.gsensor_note, font=FONT_SMALL,
-                 bg=DARK_CARD, fg=TEXT_SEC, justify="left", anchor="w").grid(
-            row=1, column=0, sticky="w", pady=(2, 0))
+                 bg=DARK_CARD, fg=ACCENT2, justify="left", anchor="w",
+                 wraplength=680).grid(row=1, column=0, sticky="w", pady=(2, 0))
         tk.Label(_gcard, font=FONT_SMALL, bg=DARK_CARD, fg=TEXT_SEC,
                  justify="left", anchor="w", wraplength=680,
                  text=("A logger on an angled mount reads gravity as acceleration, "
                        "which biases the G plot and shortens every braking figure. "
-                       "Measured from the data, not assumed - and left alone if the "
-                       "checks disagree.")).grid(row=2, column=0, sticky="w", pady=(2, 0))
+                       "Measured from the data, not assumed. Tick Level beside an "
+                       "axis above to take it out; the tick stays greyed out until "
+                       "the angle has been measured, and for an axis already "
+                       "level there is nothing to take out.")).grid(
+            row=2, column=0, sticky="w", pady=(2, 0))
 
         # collect all lockable inputs after build
         self.after(100, self._collect_inputs)
@@ -2009,7 +2009,7 @@ class App(tk.Tk):
                     "backdrop_var",
                     "gtrace_form", "gtrace_trail", "gtrace_colour", "gtrace_gmax",
                     "gt_backdrop", "gen_gtrace",
-                    "level_gsensor",
+                    "level_glat", "level_glong",
                     "tm_speed_colour", "tm_amount", "tm_stage_secs",
                     "tm_backdrop", "gen_trackmap",
                     "ld_mode", "ld_style", "ld_backdrop", "gen_lapdata",
@@ -2115,14 +2115,14 @@ class App(tk.Tk):
         tk.Frame(self.col_frame, bg=BORDER_COL, height=1).grid(
             row=1, column=0, columnspan=5, sticky='ew', pady=(0,6))
 
-        headers = ["Channel", "Detected Column", "Min / Max / Avg", "Invert", "Smooth"]
+        headers = ["Channel", "Detected Column", "Min / Max / Avg", "Invert", "Smooth", "Level"]
         for c, h in enumerate(headers):
             tk.Label(self.col_frame, text=h, font=FONT_HEAD,
                      bg=DARK_CARD, fg=ACCENT).grid(row=2, column=c, sticky="w",
                                                     padx=(0,20), pady=(0,6))
         # Separator
         tk.Frame(self.col_frame, bg=BORDER_COL, height=1).grid(
-            row=3, column=0, columnspan=5, sticky="ew", pady=(0,6))
+            row=3, column=0, columnspan=6, sticky="ew", pady=(0,6))
 
         for r, (ch, label) in enumerate(CHANNEL_LABELS.items(), start=4):
             tk.Label(self.col_frame, text=label, font=FONT_HEAD,
@@ -2220,6 +2220,21 @@ class App(tk.Tk):
                 relief="flat", bd=0, cursor="hand2").grid(
                 row=r, column=4, sticky="w", padx=(4,0))
 
+            # Level - only the two G axes have a mounting angle to take out.
+            # Disabled until the tilt has been measured, so a tick can never be
+            # offered for something the app has not worked out yet.
+            if ch in ("g_lat", "g_long"):
+                _lvar = self.level_glat if ch == "g_lat" else self.level_glong
+                _lcb = tk.Checkbutton(
+                    self.col_frame, variable=_lvar,
+                    command=self._on_level_gsensor,
+                    bg=DARK_CARD, fg=ACCENT2, activebackground=DARK_CARD,
+                    activeforeground=ACCENT2, selectcolor=DARK_PANEL,
+                    relief="flat", bd=0, cursor="hand2", state="disabled")
+                _lcb.grid(row=r, column=5, sticky="w", padx=(4,0))
+                self._level_boxes[ch] = _lcb
+
+        self._sync_level_boxes()
         self.col_frame.columnconfigure(1, weight=1)
 
     # ── Actions ────────────────────────────────────────────────────────────────
@@ -2570,8 +2585,24 @@ class App(tk.Tk):
                     break
             self._gfit = _gs.estimate(probe, getattr(self, "_aim_laps", None))
             self.gsensor_note.set(self._gfit.describe())
+            self._sync_level_boxes()
         except Exception as e:
             self.gsensor_note.set(f"G sensor: could not be checked ({type(e).__name__})")
+
+    def _sync_level_boxes(self):
+        """A Level tick is only offered for an axis that has a measured angle
+        worth taking out. Anything else and the box is greyed and cleared, so it
+        can never sit ticked while doing nothing."""
+        for ch, box in getattr(self, "_level_boxes", {}).items():
+            fit = self._gfit
+            ok = bool(fit and (fit.lat_worth_correcting if ch == "g_lat"
+                               else fit.long_worth_correcting))
+            try:
+                box.config(state="normal" if ok else "disabled")
+            except Exception:
+                pass
+            if not ok:
+                (self.level_glat if ch == "g_lat" else self.level_glong).set(False)
 
     def _on_level_gsensor(self, *_a):
         """Re-derive the working data when the tick changes."""
@@ -3249,14 +3280,14 @@ class App(tk.Tk):
         tk.Frame(self.col_frame, bg=BORDER_COL, height=1).grid(
             row=1, column=0, columnspan=5, sticky='ew', pady=(0,6))
 
-        headers = ["Channel", "Detected Column", "Min / Max / Avg", "Invert", "Smooth"]
+        headers = ["Channel", "Detected Column", "Min / Max / Avg", "Invert", "Smooth", "Level"]
         for c, h in enumerate(headers):
             tk.Label(self.col_frame, text=h, font=FONT_HEAD,
                      bg=DARK_CARD, fg=ACCENT).grid(row=2, column=c, sticky="w",
                                                     padx=(0,20), pady=(0,6))
         # Separator
         tk.Frame(self.col_frame, bg=BORDER_COL, height=1).grid(
-            row=3, column=0, columnspan=5, sticky="ew", pady=(0,6))
+            row=3, column=0, columnspan=6, sticky="ew", pady=(0,6))
 
         for r, (ch, label) in enumerate(CHANNEL_LABELS.items(), start=4):
             tk.Label(self.col_frame, text=label, font=FONT_HEAD,
@@ -3354,12 +3385,27 @@ class App(tk.Tk):
                 relief="flat", bd=0, cursor="hand2").grid(
                 row=r, column=4, sticky="w", padx=(4,0))
 
+            # Level - only the two G axes have a mounting angle to take out.
+            # Disabled until the tilt has been measured, so a tick can never be
+            # offered for something the app has not worked out yet.
+            if ch in ("g_lat", "g_long"):
+                _lvar = self.level_glat if ch == "g_lat" else self.level_glong
+                _lcb = tk.Checkbutton(
+                    self.col_frame, variable=_lvar,
+                    command=self._on_level_gsensor,
+                    bg=DARK_CARD, fg=ACCENT2, activebackground=DARK_CARD,
+                    activeforeground=ACCENT2, selectcolor=DARK_PANEL,
+                    relief="flat", bd=0, cursor="hand2", state="disabled")
+                _lcb.grid(row=r, column=5, sticky="w", padx=(4,0))
+                self._level_boxes[ch] = _lcb
+
+        self._sync_level_boxes()
         self.col_frame.columnconfigure(1, weight=1)
 
         # ── Optional extra channels A & B ──────────────────
         _opt_start = r + 2
         tk.Frame(self.col_frame, bg=BORDER_COL, height=1).grid(
-            row=_opt_start-1, column=0, columnspan=5, sticky="ew", pady=(12,8))
+            row=_opt_start-1, column=0, columnspan=6, sticky="ew", pady=(12,8))
         tk.Label(self.col_frame, text="Optional Channels",
                  font=FONT_HEAD, bg=DARK_CARD, fg=ACCENT).grid(
             row=_opt_start, column=0, columnspan=3, sticky="w", pady=(0,2))
@@ -3874,8 +3920,24 @@ class App(tk.Tk):
                     break
             self._gfit = _gs.estimate(probe, getattr(self, "_aim_laps", None))
             self.gsensor_note.set(self._gfit.describe())
+            self._sync_level_boxes()
         except Exception as e:
             self.gsensor_note.set(f"G sensor: could not be checked ({type(e).__name__})")
+
+    def _sync_level_boxes(self):
+        """A Level tick is only offered for an axis that has a measured angle
+        worth taking out. Anything else and the box is greyed and cleared, so it
+        can never sit ticked while doing nothing."""
+        for ch, box in getattr(self, "_level_boxes", {}).items():
+            fit = self._gfit
+            ok = bool(fit and (fit.lat_worth_correcting if ch == "g_lat"
+                               else fit.long_worth_correcting))
+            try:
+                box.config(state="normal" if ok else "disabled")
+            except Exception:
+                pass
+            if not ok:
+                (self.level_glat if ch == "g_lat" else self.level_glong).set(False)
 
     def _on_level_gsensor(self, *_a):
         """Re-derive the working data when the tick changes."""
@@ -4050,7 +4112,7 @@ class App(tk.Tk):
         # Sensor levelling comes before the inversions. The tilt is a fact about
         # how the box is bolted in, so it has to be taken off the reading as
         # logged - flip the sign first and the correction lands the wrong way.
-        if self.level_gsensor.get() and self._gfit is not None:
+        if (self.level_glat.get() or self.level_glong.get()) and self._gfit is not None:
             try:
                 import gsensor as _gs
                 if "g_vert" not in rows.columns:
@@ -4061,7 +4123,9 @@ class App(tk.Tk):
                                 pd.to_numeric(df[_vn], errors="coerce")
                                   .interpolate().ffill().bfill().fillna(0).values)
                             break
-                rows = _gs.level(rows, self._gfit)
+                rows = _gs.level(rows, self._gfit,
+                                 do_long=self.level_glong.get(),
+                                 do_lat=self.level_glat.get())
             except Exception:
                 pass          # never let a correction stop the log loading
 
