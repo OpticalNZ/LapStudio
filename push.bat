@@ -13,11 +13,42 @@ REM ===========================================================================
 setlocal
 cd /d "%~dp0"
 
+REM  Find git. GitHub Desktop ships its own copy but does not put it on the
+REM  PATH, so "git is not installed" is often wrong - it is installed, just
+REM  somewhere Windows will not look.
+set GIT=
 where git >nul 2>&1
-if errorlevel 1 (
+if not errorlevel 1 set GIT=git
+
+if not defined GIT (
+    for %%P in (
+        "%ProgramFiles%\Git\cmd\git.exe"
+        "%ProgramFiles(x86)%\Git\cmd\git.exe"
+        "%LOCALAPPDATA%\Programs\Git\cmd\git.exe"
+        "%LOCALAPPDATA%\GitHubDesktop\app-3.4.13\resources\app\git\cmd\git.exe"
+    ) do if exist %%P set GIT=%%P
+)
+
+if not defined GIT (
+    REM  GitHub Desktop's folder has the version in its name, so look for any.
+    for /d %%D in ("%LOCALAPPDATA%\GitHubDesktop\app-*") do (
+        if exist "%%D\resources\app\git\cmd\git.exe" set GIT="%%D\resources\app\git\cmd\git.exe"
+    )
+)
+
+if not defined GIT (
     echo.
-    echo Git is not installed, or not on the PATH.
-    echo Get it from https://git-scm.com/download/win and run this again.
+    echo   Git was not found on this computer.
+    echo.
+    echo   EASIEST FIX - install GitHub Desktop:
+    echo       https://desktop.github.com
+    echo   It signs in through your browser, so there is no token to create,
+    echo   and it can push with a button. Then use it instead of this file:
+    echo   File, Add local repository, choose this folder, Push origin.
+    echo.
+    echo   OR install command-line Git:
+    echo       https://git-scm.com/download/win
+    echo   Accept the defaults, then run this file again.
     echo.
     pause
     exit /b 1
@@ -29,18 +60,18 @@ echo   LapStudio - push source to GitHub
 echo ============================================
 echo.
 echo Repository:
-git remote get-url origin
+%GIT% remote get-url origin
 echo.
 
 REM  Anything edited but not committed would NOT be pushed, which is the most
 REM  confusing way for this to go wrong - it looks like it worked and the change
 REM  is still only on this machine.
-git diff-index --quiet HEAD --
+%GIT% diff-index --quiet HEAD --
 if errorlevel 1 (
     echo ^>^> You have changes that are saved on disk but not committed.
     echo ^>^> These will NOT be pushed:
     echo.
-    git status --short
+    %GIT% status --short
     echo.
     echo    To include them, commit them first:
     echo        git add -A
@@ -50,10 +81,10 @@ if errorlevel 1 (
 
 echo Commits waiting to go up:
 echo.
-git log --oneline origin/main..HEAD
+%GIT% log --oneline origin/main..HEAD
 echo.
 
-git log --oneline origin/main..HEAD | findstr /r "." >nul
+%GIT% log --oneline origin/main..HEAD | findstr /r "." >nul
 if errorlevel 1 (
     echo Nothing to push - GitHub already has everything committed here.
     echo.
@@ -73,7 +104,7 @@ if errorlevel 2 (
 )
 
 echo.
-git push origin main
+%GIT% push origin main
 if errorlevel 1 (
     echo.
     echo ============================================

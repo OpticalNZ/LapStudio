@@ -43,8 +43,23 @@ information is treated more harshly by Defender than one with it.
 
 ## 3. Push the source
 
-**Easiest: double-click `push.bat`.** It shows what is about to go up, warns you
-if anything is edited but not committed, waits for you to agree, then pushes.
+**You need a git client on this machine first.** The repository and its history
+live in the project folder, but Windows has no way to send them anywhere without
+one.
+
+**GitHub Desktop** is the easy option: <https://desktop.github.com>. It signs in
+through your browser, so there is no Personal Access Token to create, and it
+pushes with a button. Install it, then **File, Add local repository**, choose the
+LapStudio folder, and click **Push origin**. It will already show the waiting
+commits.
+
+**Command-line Git** is the other: <https://git-scm.com/download/win>, accept
+every default.
+
+Once either is installed, **double-click `push.bat`**. It shows what is about to
+go up, warns you if anything is edited but not committed, waits for you to agree,
+then pushes. It looks for GitHub Desktop's bundled copy of git as well as a
+normal install, because GitHub Desktop does not put git on the PATH.
 
 To do it by hand instead, you need a Command Prompt open in the project folder.
 The quick way: open the LapStudio folder in File Explorer, click the address bar,
