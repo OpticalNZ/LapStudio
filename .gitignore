@@ -87,3 +87,7 @@ motec_preview_check.png
 
 # PyInstaller regenerates this on every build, so it only ever churns.
 gopro-dashboard-overlay-main.zip
+
+# PyInstaller rewrites this on every build; it only ever churns a diff.
+*.spec
+trackmap_modes.png
