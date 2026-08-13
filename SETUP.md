@@ -35,7 +35,7 @@ On Debian or Ubuntu you may also need `sudo apt install python3-tk`.
 self-contained file; a *shared* build also needs its `av*.dll` and `sw*.dll`
 files kept alongside it.
 
-**4. AiM logs only.** CSV and VBO need nothing extra. For `.drk` / `.xrk`, copy
+**4. AiM logs only.** CSV, VBO and MoTeC `.ld` need nothing extra. For `.drk` / `.xrk`, copy
 these from a RaceStudio 3 installation into the LapStudio folder:
 
 ```
@@ -130,8 +130,14 @@ noted on its download page.
 
 1. **Data** tab — load your log. Channels are detected automatically; correct any
    that are wrong, and tick Invert on anything reading backwards.
-2. **Laps** tab — choose how laps are found. Beacons in the file are the most
-   reliable; otherwise set a GPS start/finish line or an estimated lap time.
+
+   MoTeC `.ld` files map themselves: speed, rpm, gear, throttle and brake are
+   picked up by name, and the `.ldx` beside the log supplies the driver, venue
+   and session. Brake pressure is shown as a percentage of the session's own
+   peak, since MoTeC logs kPa rather than pedal travel.
+2. **Laps** tab — choose how laps are found. MoTeC logs carry the logger's own
+   beacon lap times and need nothing set here. Otherwise beacons in the file are
+   the most reliable; otherwise set a GPS start/finish line or an estimated lap time.
 3. **Dash**, **G-Plot**, **Track Map**, **Lap Data** tabs — pick your styles. Each
    previews live; drag the scrubber under the picture to check other moments in
    the session.

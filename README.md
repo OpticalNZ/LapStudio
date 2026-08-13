@@ -6,8 +6,8 @@ chroma-key video you can drop straight onto track footage in any editor.
 A desktop app (tkinter) maps your log's columns to channels, previews each
 overlay live as you change settings, and exports the finished videos.
 
-Reads **CSV**, **VBO** (RaceLogic and compatible) and **AiM `.drk` / `.xrk`**
-logs.
+Reads **CSV**, **VBO** (RaceLogic and compatible), **MoTeC i2 `.ld`** and
+**AiM `.drk` / `.xrk`** logs.
 
 ---
 
@@ -114,6 +114,13 @@ and a 15000 rpm bike engine.
 
 **Lap timing** counts up live through a lap, then shows the completed time.
 
+**MoTeC logs bring their own lap times.** The `.ld` format holds each completed
+lap time in a channel, so laps come from the logger's beacon rather than being
+estimated from GPS. Channels are logged at their own rates, from 1 Hz counters to
+50 Hz brakes, and are resampled onto a common 25 Hz base on load. The roughly one
+third of channels that report the dash's own health - bus utilisation, error
+counters, firmware versions - are hidden from the mapping lists by default.
+
 **Backgrounds** for the gauge dashes are generated once and cached per render.
 
 ---
@@ -121,8 +128,9 @@ and a 15000 rpm bike engine.
 ## Tests
 
 ```bash
-python jitter_test.py      # fixed digit-pitch text engine; no readout may move
-python tests/ui_smoke.py   # builds the whole UI headlessly and exercises it
+python jitter_test.py       # fixed digit-pitch text engine; no readout may move
+python tests/ui_smoke.py    # builds the whole UI headlessly and exercises it
+python tests/motec_check.py # loads a MoTeC .ld end to end, if one is present
 ```
 
 `tests/ui_smoke.py` uses a stub tkinter (`tests/stubs`) so the interface can be
@@ -143,6 +151,7 @@ gtrace_render.py       G-force trace overlay
 lapdata_render.py      lap data overlay
 textgrid.py            fixed digit-pitch text, shared by every renderer
 vbo_reader.py          VBO parser
+motec_reader.py        MoTeC i2 .ld parser, written from the format up
 xrk_reader.py          AiM reader front end
 xrk_helper.py          subprocess that talks to the AiM DLL
 diagnose_aim.py        prints what the app sees in a log; useful for mapping bugs

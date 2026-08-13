@@ -2179,10 +2179,11 @@ class App(tk.Tk):
     def _browse_file(self):
         path = filedialog.askopenfilename(
             title="Select ECU Log File",
-            filetypes=[("Log files", "*.csv *.vbo *.xrk *.drk *.xrz"),
+            filetypes=[("Log files", "*.csv *.vbo *.ld *.xrk *.drk *.xrz"),
                        ("AIM XRK/DRK/XRZ", "*.xrk *.drk *.xrz *.XRK *.DRK"),
                        ("CSV files", "*.csv *.CSV"),
                        ("VBO files", "*.vbo *.VBO"),
+                       ("MoTeC i2", "*.ld *.LD"),
                        ("All files", "*.*")])
         if not path:
             return
@@ -3320,10 +3321,11 @@ class App(tk.Tk):
     def _browse_file(self):
         path = filedialog.askopenfilename(
             title="Select ECU Log File",
-            filetypes=[("Log files", "*.csv *.vbo *.xrk *.drk *.xrz"),
+            filetypes=[("Log files", "*.csv *.vbo *.ld *.xrk *.drk *.xrz"),
                        ("AIM XRK/DRK/XRZ", "*.xrk *.drk *.xrz *.XRK *.DRK"),
                        ("CSV files", "*.csv *.CSV"),
                        ("VBO files", "*.vbo *.VBO"),
+                       ("MoTeC i2", "*.ld *.LD"),
                        ("All files", "*.*")])
         if not path:
             return
@@ -3569,6 +3571,110 @@ class App(tk.Tk):
             f"Loaded VBO: {meta.get('driver','')} @ {meta.get('track','')}  "
             f"— {n_laps} laps, best {meta.get('best_lap','')}")
 
+    def _load_motec(self, path):
+        """Load a MoTeC i2 .ld file and populate the app.
+
+        Runs off the main thread: a 27 minute log is 124 channels that each have
+        to be decoded and put on a common time base, which takes a moment.
+        """
+        try:
+            try:
+                import motec_reader as _ld_mod
+            except ImportError:
+                self.after(0, lambda: self.status_var.set(
+                    "motec_reader.py not found - place it beside ecu_overlay_app.py"))
+                return
+
+            def _p(cur, total, msg=""):
+                self.after(0, lambda: self.status_var.set(f"MoTeC: {msg}"))
+
+            self.after(0, lambda: (self._loading_start("Reading MoTeC"),
+                                   self.status_var.set("Loading MoTeC log...")))
+            df, meta = _ld_mod.read_ld(path, progress_cb=_p)
+
+            # The app looks for GPS under these names.
+            df['GPS_Latitude']  = df['lat']
+            df['GPS_Longitude'] = df['lon']
+            df['GPS_Speed']     = df['speed']
+
+            self.ts_col        = 'ts'
+            self.df            = df
+            self._working_rows = df.copy()
+            self._aim_laps     = meta.get('laps', [])
+            self._motec_meta   = meta
+            self._vbo_meta     = meta          # shared downstream readers
+
+            # The reader has already put everything on one clock, so the rate is
+            # known exactly rather than inferred from timestamp spacing.
+            fps_resample = int(round(meta.get('rate_hz', 25.0)))
+            self._data_fps = fps_resample
+
+            self.after(0, lambda: (self._on_motec_loaded(path, df, meta, fps_resample),
+                                   self._loading_stop()))
+
+        except Exception as e:
+            import traceback
+            msg = f"MoTeC load error: {e}\n{traceback.format_exc()}"
+            self.after(0, lambda m=msg: (self._loading_stop("load failed"),
+                                         self.status_var.set(m[:200])))
+
+    def _on_motec_loaded(self, path, df, meta, fps_resample):
+        """Main-thread half of the MoTeC load."""
+        cols = list(df.columns)
+
+        self.file_path.set(path)
+        dur = float(df['ts'].max())
+        self.t_start_var.set("0.0")
+        self.t_end_var.set(f"{dur:.1f}")
+        if hasattr(self, 'max_t_label'):
+            self.max_t_label.set(f"max {dur:.1f}s")
+        self.ts_col = 'ts'
+
+        _ec = meta.get('engine_channels', {}) if isinstance(meta, dict) else {}
+        motec_map = {
+            'speed':    'speed',
+            'g_lat':    'g_lat',
+            'g_long':   'g_long',
+            'rpm':      'rpm'      if _ec.get('rpm')      else None,
+            'throttle': 'throttle' if _ec.get('throttle') else None,
+            'brake':    'brake'    if _ec.get('brake')    else None,
+            'gear':     'gear'     if _ec.get('gear')     else None,
+        }
+        self._build_col_mapping(cols, preset=motec_map)
+        self._prepare_working_df(motec_map)
+
+        self.lap_lat_col.set('lat')
+        self.lap_lon_col.set('lon')
+        if hasattr(self, '_lat_col_cb'):
+            self._lat_col_cb['values'] = cols
+            self._lon_col_cb['values'] = cols
+
+        if hasattr(self, '_file_info_var'):
+            self._file_info_var.set(
+                f"data: {fps_resample} fps  \u00b7  {len(df):,} rows  \u00b7  {dur:.1f}s  \u00b7  "
+                f"{meta.get('channel_count', 0)} channels "
+                f"({len(meta.get('hidden_channels', []))} diagnostics hidden)  \u00b7  "
+                f"Driver: {meta.get('driver','')}  \u00b7  Track: {meta.get('track','')}  \u00b7  "
+                f"Best: {meta.get('best_lap','')}")
+
+        # MoTeC times its own laps at the beacon, so these are the logger's
+        # figures rather than anything this app has estimated from GPS.
+        n_laps = len(self._aim_laps)
+        if hasattr(self, '_aim_info_lbl') and n_laps:
+            self._aim_info_lbl.config(
+                text=f"{n_laps} laps from the MoTeC lap timer  "
+                     f"(best: {meta.get('best_lap','')})")
+
+        self._auto_detect_sf()
+        self._update_lap_display()
+
+        _warn = ""
+        if meta.get('gps_dropout_samples'):
+            _warn = f"  - {meta['gps_dropout_samples']} GPS samples had no fix"
+        self.status_var.set(
+            f"Loaded MoTeC: {meta.get('driver','')} @ {meta.get('track','')}  "
+            f"- {n_laps} laps, best {meta.get('best_lap','')}{_warn}")
+
     def _load_file(self, path):
         self._set_output_name_from_log(path)
         self.status_var.set("Loading file…")
@@ -3581,6 +3687,10 @@ class App(tk.Tk):
         if _ext == '.vbo':
             import threading
             threading.Thread(target=self._load_vbo, args=(path,), daemon=True).start()
+            return
+        if _ext == '.ld':
+            import threading
+            threading.Thread(target=self._load_motec, args=(path,), daemon=True).start()
             return
         try:
             df, ts_col, cols = load_file(path)

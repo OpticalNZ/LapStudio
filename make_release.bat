@@ -167,7 +167,7 @@ for /f "tokens=1,2 delims=." %%a in ("!PYVER!") do (
 set MINWIN=Windows 10 or newer
 if !PYMAJ! EQU 3 if !PYMIN! LEQ 12 set MINWIN=Windows 8.1 or newer
 if !PYMAJ! EQU 3 if !PYMIN! LEQ 8  set MINWIN=Windows 7 or newer
-echo   Python !PYVER!  ->  this build will require !MINWIN!
+echo   Python !PYVER!  -^>  this build will require !MINWIN!
 
 REM --- 2. Build --------------------------------------------------------------
 python -m pip show pyinstaller >nul 2>&1
@@ -203,6 +203,7 @@ python -m PyInstaller ^
   --hidden-import xrk_helper ^
   --hidden-import xrk_reader ^
   --hidden-import vbo_reader ^
+  --hidden-import motec_reader ^
   --hidden-import renderer_pil ^
   --hidden-import renderer_multistyle ^
   --hidden-import lapdata_render ^

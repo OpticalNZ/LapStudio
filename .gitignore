@@ -75,3 +75,12 @@ LapStudio-*.zip
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Telemetry logs. These are customers' session data and must never be published.
+*.ld
+*.ldx
+*.drk
+*.xrk
+*.xrz
+*.vbo
+motec_preview_check.png
