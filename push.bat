@@ -30,9 +30,14 @@ if not defined GIT (
 )
 
 if not defined GIT (
-    REM  GitHub Desktop's folder has the version in its name, so look for any.
+    REM  GitHub Desktop's folder carries the version in its name, so match any of
+    REM  them, and check both places it has kept git across versions.
     for /d %%D in ("%LOCALAPPDATA%\GitHubDesktop\app-*") do (
-        if exist "%%D\resources\app\git\cmd\git.exe" set GIT="%%D\resources\app\git\cmd\git.exe"
+        if exist "%%D\resources\app\git\cmd\git.exe" (
+            set GIT="%%D\resources\app\git\cmd\git.exe"
+        ) else if exist "%%D\resources\app\git\mingw64\bin\git.exe" (
+            set GIT="%%D\resources\app\git\mingw64\bin\git.exe"
+        )
     )
 )
 
@@ -111,8 +116,16 @@ if errorlevel 1 (
     echo   PUSH FAILED
     echo ============================================
     echo.
-    echo   Asked for a username and password?
-    echo     GitHub stopped accepting account passwords. Use a Personal Access
+    echo   Asked for a username and password, or refused your login?
+    echo     GitHub Desktop is already signed in. Use it instead - it is the
+    echo     shortest way past this:
+    echo         open GitHub Desktop, File, Add local repository,
+    echo         choose this folder, then click Push origin.
+    echo     The sign-in this file uses is separate from Desktop's, which is why
+    echo     one can work when the other does not.
+    echo.
+    echo     To fix it here instead: GitHub stopped accepting account passwords.
+    echo     Use a Personal Access
     echo     Token as the password: github.com, Settings, Developer settings,
     echo     Personal access tokens. Give it "repo" access.
     echo     Easier alternative: install GitHub Desktop and push from there.
