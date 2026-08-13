@@ -37,7 +37,9 @@ the layout needs it):
 independently:
 
 - **Track map** — the circuit from GPS, coloured by speed, with a moving car dot.
-  Either the whole lap, or a window of track that scrolls past a fixed dot.
+  Three modes: **All** draws every lap in the range as logged; **Static track**
+  draws one clean circuit taken from the fastest lap; **Stage** draws a length of
+  track that scrolls past a car pinned to the centre, with a selectable length.
 - **G-force trace** — a G-G plot as a crosshair target or an X-Y graph, with a
   speed-coloured trail and live readouts.
 - **Lap data** — the current lap and time, or the full lap list with the current

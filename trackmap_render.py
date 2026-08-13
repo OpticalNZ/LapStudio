@@ -193,6 +193,22 @@ def _make_projector(lat, lon, w, h, pad):
     return project
 
 
+def _track_slice(ts, track_window):
+    """Index range of the samples that define the drawn track.
+
+    Returns the whole array unless `track_window` names a (t0, t1) that actually
+    contains enough points - a lap chosen from a different session, or one
+    filtered out of range, must not leave the map blank.
+    """
+    if not track_window:
+        return 0, len(ts)
+    t0, t1 = float(track_window[0]), float(track_window[1])
+    sel = np.flatnonzero((ts >= t0) & (ts <= t1))
+    if len(sel) < 8:
+        return 0, len(ts)
+    return int(sel[0]), int(sel[-1]) + 1
+
+
 def _project_path(lat, lon, w, h, pad):
     """Backwards-compatible single-path projection."""
     return _make_projector(lat, lon, w, h, pad)(lat, lon)
@@ -244,7 +260,7 @@ def render_video(rows, t_start, t_end, output_path, fps,
                  speed_colour=True, lat_col="g_lat_unused",
                  laps=None, map_fps=4.0,
                  line_colour=(235, 235, 245), show_current_lap=True,
-                 segment_secs=None):
+                 segment_secs=None, track_window=None):
     """Render the track-map overlay video.
 
     The ENTIRE session GPS path is drawn once as a solid dark "ghost" outline
@@ -256,6 +272,14 @@ def render_video(rows, t_start, t_end, output_path, fps,
     `rows` needs columns: ts, lat, lon, speed.
     `laps` is an optional list of (start_ts, end_ts, lap_time) used to pick the
     current lap; if omitted the whole session is treated as one lap.
+
+    `track_window` is an optional (t0, t1) naming the slice of the session whose
+    GPS path defines the drawn track - normally the fastest lap. The outline and
+    the map scale come from that lap alone, so the picture is one clean circuit
+    rather than every lap overlaid with the pit lane and any excursions. The dot
+    still follows the real position for the whole session, which means it can sit
+    briefly off the drawn line during an out lap. That is honest, and preferable
+    to hiding it.
     """
     try:
         from PIL import Image, ImageDraw
@@ -276,7 +300,7 @@ def render_video(rows, t_start, t_end, output_path, fps,
         # keep every sample so a window centred on the car can look either side
         # of the export boundary.
         good = ~(np.isnan(lat_all) | np.isnan(lon_all))
-        if not segment_secs:
+        if not segment_secs and track_window is None:
             good &= (ts_all >= t_start) & (ts_all <= t_end)
         lat_all, lon_all, ts_all = lat_all[good], lon_all[good], ts_all[good]
         spd_all = spd_all[good] if spd_all is not None else None
@@ -288,7 +312,8 @@ def render_video(rows, t_start, t_end, output_path, fps,
         min_spd, max_spd = (rng[0], rng[1] if rng[1] > rng[0] else rng[0] + 1)
 
         pad = int(min(w, h) * 0.10)
-        project = _make_projector(lat_all, lon_all, w, h, pad)
+        _a0, _b0 = _track_slice(ts_all, track_window)
+        project = _make_projector(lat_all[_a0:_b0], lon_all[_a0:_b0], w, h, pad)
         all_pts = project(lat_all, lon_all)
         _wcosl = _wscale = _wdist = _wwin = None
         if segment_secs:
@@ -308,11 +333,12 @@ def render_video(rows, t_start, t_end, output_path, fps,
         _line_w = max(4, int(min(w, h) * 0.018))
         _bord0 = max(2, int(min(w, h) * 0.006))
         if not segment_secs:
-            _ti = _thin_idx(all_pts, max(2.0, _line_w * 0.6))
-            _col_at = (lambda i: tuple(_speed_colour_fn(spd_all[i], min_spd, max_spd)) + (255,)) \
+            _tpts = all_pts[_a0:_b0]
+            _ti = _thin_idx(_tpts, max(2.0, _line_w * 0.6))
+            _col_at = (lambda i: tuple(_speed_colour_fn(spd_all[_a0 + i], min_spd, max_spd)) + (255,)) \
                 if (speed_colour and spd_all is not None) else (lambda i: tuple(line_colour) + (255,))
-            _draw_chain(bd, all_pts, _ti, _line_w + 2 * _bord0, lambda i: (0, 0, 0, 255))
-            _draw_chain(bd, all_pts, _ti, _line_w, _col_at)
+            _draw_chain(bd, _tpts, _ti, _line_w + 2 * _bord0, lambda i: (0, 0, 0, 255))
+            _draw_chain(bd, _tpts, _ti, _line_w, _col_at)
 
         # ── Frame grid at the (low) track-map fps ────────────────────────────
         _fps = map_fps if map_fps and map_fps > 0 else fps
@@ -407,11 +433,21 @@ def render_video(rows, t_start, t_end, output_path, fps,
 def render_preview_frame(rows, t_now, resolution=(480, 480),
                          chroma=(255, 0, 255), transparent=False,
                          speed_colour=True, line_colour=(235, 235, 245),
-                         segment_secs=None, t_start=None, t_end=None, laps=None):
+                         segment_secs=None, t_start=None, t_end=None, laps=None,
+                         track_window=None):
     """Return a single PIL RGBA image of the track map at time t_now, for the
     in-app preview. Mirrors render_video's look without invoking ffmpeg. When
     `segment_secs` is set, a window centred on the car is drawn; otherwise the
-    whole track within [t_start, t_end] is drawn."""
+    whole track within [t_start, t_end] is drawn.
+
+    `track_window` is an optional (t0, t1) naming the slice of the session whose
+    GPS path defines the drawn track - normally the fastest lap. The outline and
+    the map scale come from that lap alone, so the picture is one clean circuit
+    rather than every lap overlaid with the pit lane and any excursions. The dot
+    still follows the real position for the whole session, which means it can sit
+    briefly off the drawn line during an out lap. That is honest, and preferable
+    to hiding it.
+    """
     from PIL import Image, ImageDraw
     import pandas as pd
     w, h = resolution
@@ -423,7 +459,10 @@ def render_preview_frame(rows, t_now, resolution=(480, 480),
            if "speed" in rows.columns else None)
     ts = pd.to_numeric(rows["ts"], errors="coerce").to_numpy()
     good = ~(np.isnan(lat) | np.isnan(lon))
-    if not segment_secs:            # window mode may look either side of the range
+    if not segment_secs and track_window is None:
+        # Window and static modes may both look outside the export range: the
+        # first to centre on the car, the second because the lap defining the
+        # track need not sit inside the clip being exported.
         if t_start is not None:
             good &= (ts >= t_start)
         if t_end is not None:
@@ -464,17 +503,21 @@ def render_preview_frame(rows, t_now, resolution=(480, 480),
     else:
         # ALL mode: dark "ghost" outline of every lap in range, with the WHOLE of
         # the CURRENT lap drawn in speed colour (not revealed by lap progress).
-        project = _make_projector(lat, lon, w, h, pad)
+        # STATIC mode: the same, but both the outline and the scale come from one
+        # nominated lap.
+        _a0, _b0 = _track_slice(ts, track_window)
+        project = _make_projector(lat[_a0:_b0], lon[_a0:_b0], w, h, pad)
         pts = project(lat, lon)
         # ALL mode draws the COMPLETE track for the selected time range. Using
         # only the current lap left the outline unfinished whenever that lap was
         # an out-lap or partial (which is what "full track not showing" was).
-        sidx = _thin_idx(pts, max(2.0, line_w * 0.6))
+        _tpts = pts[_a0:_b0]
+        sidx = _thin_idx(_tpts, max(2.0, line_w * 0.6))
         if len(sidx) >= 2:
-            _ca = (lambda i: tuple(_speed_colour_fn(spd[i], min_spd, max_spd)) + (255,)) \
+            _ca = (lambda i: tuple(_speed_colour_fn(spd[_a0 + i], min_spd, max_spd)) + (255,)) \
                 if (speed_colour and spd is not None) else (lambda i: tuple(line_colour) + (255,))
-            _draw_chain(d, pts, sidx, line_w + 2 * _bord, lambda i: (0, 0, 0, 255))
-            _draw_chain(d, pts, sidx, line_w, _ca)
+            _draw_chain(d, _tpts, sidx, line_w + 2 * _bord, lambda i: (0, 0, 0, 255))
+            _draw_chain(d, _tpts, sidx, line_w, _ca)
         idx = int(np.clip(np.searchsorted(ts, t_now), 0, len(pts) - 1))
         px, py = pts[idx]
 

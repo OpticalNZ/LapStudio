@@ -433,10 +433,13 @@ def read_ld(filepath, progress_cb=None, rate_hz=DEFAULT_RATE_HZ, all_channels=Fa
         "G Force Long", "GPS Heading", "GPS Altitude", "Engine Speed", "Gear",
         "Throttle Position",
     }
-    for name, values in table.items():
-        if name in consumed or name in df.columns:
-            continue
-        df[name] = pd.Series(values).ffill().bfill().fillna(0.0).to_numpy()
+    # Added in one go. Inserting 100+ columns one at a time fragments the frame
+    # and pandas rightly complains about it.
+    extras = {name: pd.Series(values).ffill().bfill().fillna(0.0).to_numpy()
+              for name, values in table.items()
+              if name not in consumed and name not in df.columns}
+    if extras:
+        df = pd.concat([df, pd.DataFrame(extras, index=df.index)], axis=1)
     report(90, "Assembled")
 
     # ── Metadata ─────────────────────────────────────────────────────────────

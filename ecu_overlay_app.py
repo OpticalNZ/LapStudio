@@ -569,6 +569,16 @@ _EXACT_NAMES = {
 }
 
 
+# Track map modes.
+#   All          every lap in the export range, as logged
+#   Static track one clean circuit taken from the fastest lap, car dot on top
+#   Stage        a length of track that scrolls past a car pinned to the centre
+_TM_AMOUNTS = ("All", "Static track", "Stage")
+
+_TM_STAGE_LENGTHS = tuple([f"{n}s" for n in range(10, 61, 10)]
+                          + [f"{n}s" for n in (75, 90, 105, 120, 135, 150)])
+
+
 def auto_detect_channels(columns):
     """Return best-guess column mapping for each channel."""
     mapping = {}
@@ -1055,7 +1065,8 @@ class App(tk.Tk):
         self.tm_backdrop  = tk.StringVar(value="Chroma magenta")   # track-map widget
         # Track-map widget options (own settings, independent of the dash)
         self.tm_speed_colour = tk.BooleanVar(value=True)
-        self.tm_amount   = tk.StringVar(value="All")   # All, or a 10..150s window
+        self.tm_amount   = tk.StringVar(value="All")   # All / Static track / Stage
+        self.tm_stage_secs = tk.StringVar(value="30s")  # only used by Stage
         # Optional separate lap-data overlay video
         self.gen_lapdata = tk.BooleanVar(value=False)
         self.ld_mode     = tk.StringVar(value="Current lap")
@@ -1832,12 +1843,23 @@ class App(tk.Tk):
         tk.Label(tm, text="Map amount:", font=FONT_SMALL, bg=DARK_CARD, fg=TEXT_SEC).grid(
             row=5, column=0, sticky="w", padx=(0,10), pady=(2,2))
         _tm_amt = ttk.Combobox(tm, textvariable=self.tm_amount, state="readonly",
-                               values=(["All"]
-                                       + [f"{n}s window" for n in range(10, 61, 10)]
-                                       + [f"{n}s window" for n in (75, 90, 105, 120, 135, 150)]),
+                               values=list(_TM_AMOUNTS),
                                width=18, font=FONT_MONO)
         _tm_amt.grid(row=5, column=1, columnspan=2, sticky="w", pady=(2,4))
         self._fix_combo(_tm_amt)
+
+        # Stage length. Only Stage uses it, so it is hidden for the other two
+        # rather than left on screen doing nothing.
+        self._tm_stage_lbl = tk.Label(tm, text="Stage length:", font=FONT_SMALL,
+                                      bg=DARK_CARD, fg=TEXT_SEC)
+        self._tm_stage_lbl.grid(row=6, column=0, sticky="w", padx=(0,10), pady=(2,4))
+        self._tm_stage_cb = ttk.Combobox(tm, textvariable=self.tm_stage_secs,
+                                         state="readonly", values=list(_TM_STAGE_LENGTHS),
+                                         width=18, font=FONT_MONO)
+        self._tm_stage_cb.grid(row=6, column=1, columnspan=2, sticky="w", pady=(2,4))
+        self._fix_combo(self._tm_stage_cb)
+        self.tm_amount.trace_add("write", self._sync_trackmap_controls)
+        self._sync_trackmap_controls()
 
         # ── ⑧ LAP DATA STYLE (standalone lap-data overlay) ────────────────────
         ld = self._card(tab_ld, 0)
@@ -1964,7 +1986,8 @@ class App(tk.Tk):
                     "backdrop_var",
                     "gtrace_form", "gtrace_trail", "gtrace_colour", "gtrace_gmax",
                     "gt_backdrop", "gen_gtrace",
-                    "tm_speed_colour", "tm_amount", "tm_backdrop", "gen_trackmap",
+                    "tm_speed_colour", "tm_amount", "tm_stage_secs",
+                    "tm_backdrop", "gen_trackmap",
                     "ld_mode", "ld_style", "ld_backdrop", "gen_lapdata",
                     "t_start_var", "t_end_var"):
             _v = getattr(self, _vn, None)
@@ -4365,6 +4388,7 @@ class App(tk.Tk):
                     chroma=self._bd_rgb(self.tm_backdrop.get()),
                     transparent=False, speed_colour=self.tm_speed_colour.get(),
                     line_colour=_tm_line, segment_secs=self._tm_segment_secs(),
+                    track_window=self._tm_track_window(),
                     t_start=_t_lo, t_end=_t_hi, laps=laps)))
         except Exception as _e:
             print(f"track-map preview skipped: {_e}", flush=True)
@@ -4932,6 +4956,7 @@ class App(tk.Tk):
                 speed_colour=self.tm_speed_colour.get(),
                 line_colour=(235, 235, 245),
                 segment_secs=self._tm_segment_secs(),
+                track_window=self._tm_track_window(),
                 t_start=_t_lo, t_end=_t_hi, laps=laps)
         elif kind == "lapdata":
             if not _LD_OK:
@@ -5190,15 +5215,51 @@ class App(tk.Tk):
         return "panels"
 
     def _tm_segment_secs(self):
-        """Track-map 'Map amount' -> total window length in seconds (centred on
-        the car), or None for All."""
+        """Stage length in seconds, or None when the whole track is drawn.
+
+        Older preference files stored the length in the mode itself, as
+        "30s window". Those are still understood so an upgrade does not silently
+        reset someone's setting.
+        """
         v = self.tm_amount.get() if hasattr(self, "tm_amount") else "All"
-        if v == "All":
+        if v in ("All", "Static track"):
             return None
+        if v == "Stage":
+            v = self.tm_stage_secs.get() if hasattr(self, "tm_stage_secs") else "30s"
         try:
-            return float(v.split("s")[0])      # "30s window" -> 30
-        except Exception:
+            return float(str(v).split("s")[0])
+        except (ValueError, TypeError):
             return None
+
+    def _tm_track_window(self):
+        """(start, end) of the lap whose path is drawn, or None for every lap.
+
+        Static track uses the fastest lap, because it is the one most likely to
+        be a clean circuit - an out lap can cut the pit lane and a slow lap can
+        wander. Falls back to every lap when no lap is timed, rather than
+        drawing nothing.
+        """
+        if getattr(self, "tm_amount", None) is None:
+            return None
+        if self.tm_amount.get() != "Static track":
+            return None
+        laps = getattr(self, "_aim_laps", None) or []
+        timed = [(lt, st, et) for (st, et, lt) in laps if lt and 5.0 < lt < 3600.0]
+        if not timed:
+            return None
+        _lt, st, et = min(timed)
+        return (float(st), float(et))
+
+    def _sync_trackmap_controls(self, *_a):
+        """Stage length only means anything in Stage mode."""
+        if not hasattr(self, "_tm_stage_cb"):
+            return
+        show = self.tm_amount.get() == "Stage"
+        for w in (self._tm_stage_lbl, self._tm_stage_cb):
+            try:
+                w.grid() if show else w.grid_remove()
+            except Exception:
+                pass
 
     def _apply_backdrop_to_P(self, P):
         """Return a copy of style params P with the hard-coded magenta chroma
@@ -5254,6 +5315,7 @@ class App(tk.Tk):
                                   line_colour=_tm_line_col,
                                   show_current_lap=_tm_show_lap,
                                   segment_secs=self._tm_segment_secs(),
+                track_window=self._tm_track_window(),
                                   laps=_laps_tm, map_fps=10.0), None))
         if self.gen_gtrace.get():
             import numpy as _np2
