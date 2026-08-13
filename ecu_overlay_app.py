@@ -3134,7 +3134,14 @@ class App(tk.Tk):
                      font=FONT_SMALL, bg=DARK_CARD, fg=TEXT_SEC).grid(row=0, column=0, sticky="w")
             return
 
-        mapping = preset if preset is not None else auto_detect_channels(columns)
+        # A loader's preset only names the channels it is sure about. Anything it
+        # leaves out is auto-detected as usual, so GPS latitude and longitude are
+        # found by name rather than left blank for the user to hunt down. A key
+        # the preset sets to None stays unset - that is a deliberate "this file
+        # has no such channel", not an omission.
+        mapping = auto_detect_channels(columns)
+        if preset is not None:
+            mapping = {**mapping, **preset}
 
         # ── Time channel selector ──────────────────────────────────────────
         tk.Label(self.col_frame, text="Time:", font=FONT_HEAD,
@@ -3629,6 +3636,14 @@ class App(tk.Tk):
         if hasattr(self, 'max_t_label'):
             self.max_t_label.set(f"max {dur:.1f}s")
         self.ts_col = 'ts'
+
+        # MoTeC reports lateral and longitudinal G with the opposite sign to the
+        # one this app draws with. The data itself is right - checked against the
+        # GPS path and the speed derivative, both correlate at r = 0.95 - so this
+        # is a convention mismatch, and the invert ticks are what it is for. Set
+        # only for MoTeC; AiM and VBO keep their own defaults.
+        self.invert_glat.set(True)
+        self.invert_glong.set(True)
 
         _ec = meta.get('engine_channels', {}) if isinstance(meta, dict) else {}
         motec_map = {
