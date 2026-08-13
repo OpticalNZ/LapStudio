@@ -1423,23 +1423,6 @@ class App(tk.Tk):
         self._register_help(self.col_frame, "channels")
         self._build_col_mapping([])   # empty until file loaded
 
-        # ── G sensor levelling ────────────────────────────────────────────────
-        _gcard = self._card(tab_data, 4)
-        tk.Label(_gcard, text="G SENSOR MOUNTING", font=FONT_HEAD,
-                 bg=DARK_CARD, fg=ACCENT).grid(row=0, column=0, sticky="w")
-        tk.Label(_gcard, textvariable=self.gsensor_note, font=FONT_SMALL,
-                 bg=DARK_CARD, fg=ACCENT2, justify="left", anchor="w",
-                 wraplength=680).grid(row=1, column=0, sticky="w", pady=(2, 0))
-        tk.Label(_gcard, font=FONT_SMALL, bg=DARK_CARD, fg=TEXT_SEC,
-                 justify="left", anchor="w", wraplength=680,
-                 text=("A logger on an angled mount reads gravity as acceleration, "
-                       "which biases the G plot and shortens every braking figure. "
-                       "Measured from the data, not assumed. Tick Level beside an "
-                       "axis above to take it out; the tick stays greyed out until "
-                       "the angle has been measured, and for an axis already "
-                       "level there is nothing to take out.")).grid(
-            row=2, column=0, sticky="w", pady=(2, 0))
-
         # collect all lockable inputs after build
         self.after(100, self._collect_inputs)
 
@@ -2588,6 +2571,9 @@ class App(tk.Tk):
                           .interpolate().ffill().bfill().fillna(0).values)
                     break
             self._gfit = _gs.estimate(probe, getattr(self, "_aim_laps", None))
+            # Kept for the status bar and the tests; there is no longer a panel
+            # showing it, the Level ticks in the mapping table say it instead by
+            # being offered or greyed out.
             self.gsensor_note.set(self._gfit.describe())
             self._sync_level_boxes()
         except Exception as e:
@@ -3923,6 +3909,9 @@ class App(tk.Tk):
                           .interpolate().ffill().bfill().fillna(0).values)
                     break
             self._gfit = _gs.estimate(probe, getattr(self, "_aim_laps", None))
+            # Kept for the status bar and the tests; there is no longer a panel
+            # showing it, the Level ticks in the mapping table say it instead by
+            # being offered or greyed out.
             self.gsensor_note.set(self._gfit.describe())
             self._sync_level_boxes()
         except Exception as e:
